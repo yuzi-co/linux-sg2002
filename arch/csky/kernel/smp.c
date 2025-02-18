@@ -93,7 +93,7 @@ send_ipi_message(const struct cpumask *to_whom, enum ipi_message_type operation)
 	for_each_cpu(i, to_whom)
 		set_bit(operation, &per_cpu_ptr(&ipi_data, i)->bits);
 
-	smp_mb();
+	smp_mb();/*memory barrier*/
 	send_arch_ipi(to_whom);
 }
 
@@ -203,8 +203,8 @@ volatile unsigned int secondary_hint;
 volatile unsigned int secondary_hint2;
 volatile unsigned int secondary_ccr;
 volatile unsigned int secondary_stack;
-
-unsigned long secondary_msa1;
+volatile unsigned int secondary_msa1;
+volatile unsigned int secondary_pgd;
 
 int __cpu_up(unsigned int cpu, struct task_struct *tidle)
 {
@@ -216,6 +216,7 @@ int __cpu_up(unsigned int cpu, struct task_struct *tidle)
 	secondary_hint2 = mfcr("cr<21, 1>");
 	secondary_ccr  = mfcr("cr18");
 	secondary_msa1 = read_mmu_msa1();
+	secondary_pgd = mfcr("cr<29, 15>");
 
 	/*
 	 * Because other CPUs are in reset status, we must flush data
@@ -233,7 +234,9 @@ int __cpu_up(unsigned int cpu, struct task_struct *tidle)
 	}
 
 	/* Wait for the cpu online */
+
 	while (!cpu_online(cpu));
+
 
 	secondary_stack = 0;
 
@@ -262,8 +265,6 @@ void csky_start_secondary(void)
 
 	flush_tlb_all();
 	write_mmu_pagemask(0);
-	TLBMISS_HANDLER_SETUP_PGD(swapper_pg_dir);
-	TLBMISS_HANDLER_SETUP_PGD_KERNEL(swapper_pg_dir);
 
 #ifdef CONFIG_CPU_HAS_FPU
 	init_fpu();
