@@ -7,6 +7,7 @@
 #include <linux/completion.h>
 #include <linux/debugfs.h>
 #include <linux/delay.h>
+#include <linux/gpio.h>
 #include <linux/gpio/consumer.h>
 #include <linux/i2c-algo-bit.h>
 #include <linux/i2c.h>
@@ -17,6 +18,25 @@
 #include <linux/platform_data/i2c-gpio.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
+
+#include <linux/kernel.h>
+#include <linux/fs.h>
+#include <linux/sysfs.h>
+#include <linux/kobject.h>
+#include <linux/err.h>
+
+#define DEBUG_LOG_TAG 			"[i2c gpio]"
+#define DEBUG_LOG(fmt, ...)		printk(KERN_DEBUG DEBUG_LOG_TAG " " fmt, ##__VA_ARGS__)
+
+static int delay_us = -1;
+volatile int udelay_value = 0;
+struct kobject *udelay_v;
+struct i2c_algo_bit_data *udelay_data = NULL;
+
+static int sda = -1;
+static int scl = -1;
+
+static bool insmod_gpio = false;
 
 struct i2c_gpio_private_data {
 	struct gpio_desc *sda;
@@ -31,6 +51,49 @@ struct i2c_gpio_private_data {
 	u64 scl_irq_data;
 #endif
 };
+
+static void show_freq(void)
+{
+	switch(udelay_data->udelay) {
+	case 0:
+		DEBUG_LOG("Freq max ~ 750KHz for MaixCAM");
+		break;
+	case 1:
+		DEBUG_LOG("Freq 500KHz ~ 308KHz for MaixCAM");
+		break;
+	case 2:
+		DEBUG_LOG("Freq 250KHz");
+		break;
+	case 5:
+		DEBUG_LOG("Freq 100KHz");
+		break;
+	default:
+		DEBUG_LOG("Freq - Unknown");
+		break;
+	}
+}
+
+static ssize_t __udelay_show(struct kobject *kobj,
+                struct kobj_attribute *attr, char *buf)
+{
+    // DEBUG_LOG("Read udelay value: %d\n", udelay_value);
+	show_freq();
+	udelay_value = udelay_data->udelay;
+    return sprintf(buf, "%d", udelay_value);
+}
+
+static ssize_t __udelay_store(struct kobject *kobj,
+                struct kobj_attribute *attr,const char *buf, size_t count)
+{
+	// int old_value = udelay_value;
+    sscanf(buf,"%d",&udelay_value);
+	udelay_data->udelay = udelay_value;
+	// DEBUG_LOG("Write udelay value: %d --> %d\n", old_value, udelay_value);
+	// show_freq();
+    return count;
+}
+
+struct kobj_attribute sysfs_test_attr = __ATTR(udelay_v, 0664, __udelay_show, __udelay_store);
 
 /*
  * Toggle SDA by changing the output value of the pin. This is only
@@ -362,8 +425,10 @@ static int i2c_gpio_probe(struct platform_device *pdev)
 	struct i2c_adapter *adap;
 	struct device *dev = &pdev->dev;
 	struct device_node *np = dev->of_node;
-	enum gpiod_flags gflags;
+	enum gpiod_flags gflags_sda, gflags_scl;
+	unsigned long gf_sda, gf_scl;
 	int ret;
+	struct device *curr_dev;
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
@@ -384,6 +449,9 @@ static int i2c_gpio_probe(struct platform_device *pdev)
 			memcpy(pdata, dev_get_platdata(dev), sizeof(*pdata));
 	}
 
+	/* 508 SCL
+		509 SDA */
+
 	/*
 	 * First get the GPIO pins; if it fails, we'll defer the probe.
 	 * If the SCL/SDA lines are marked "open drain" by platform data or
@@ -392,21 +460,67 @@ static int i2c_gpio_probe(struct platform_device *pdev)
 	 * handle them as we handle any other output. Else we enforce open
 	 * drain as this is required for an I2C bus.
 	 */
-	if (pdata->sda_is_open_drain)
-		gflags = GPIOD_OUT_HIGH;
-	else
-		gflags = GPIOD_OUT_HIGH_OPEN_DRAIN;
-	priv->sda = i2c_gpio_get_desc(dev, "sda", 0, gflags);
-	if (IS_ERR(priv->sda))
-		return PTR_ERR(priv->sda);
+	if (sda >= 0 && scl >= 0) {
+		DEBUG_LOG("used sda %d and scl %d without device tree\n", sda, scl);
 
-	if (pdata->scl_is_open_drain)
-		gflags = GPIOD_OUT_HIGH;
-	else
-		gflags = GPIOD_OUT_HIGH_OPEN_DRAIN;
-	priv->scl = i2c_gpio_get_desc(dev, "scl", 1, gflags);
-	if (IS_ERR(priv->scl))
-		return PTR_ERR(priv->scl);
+		if (pdata->sda_is_open_drain) {
+			gf_sda = GPIOF_OUT_INIT_HIGH;
+		} else
+			gf_sda = GPIOF_OUT_INIT_HIGH | GPIOF_OPEN_DRAIN;
+
+		if (pdata->scl_is_open_drain)
+			gf_scl = GPIOF_OUT_INIT_HIGH;
+		else
+			gf_scl = GPIOF_OUT_INIT_HIGH | GPIOF_OPEN_DRAIN;
+
+		/* request sda */
+		ret = gpio_request_one(sda, gf_sda, "sda");
+		if (ret < 0) {
+			DEBUG_LOG("request sda failed!\n");
+			return -1;
+		}
+		priv->sda = gpio_to_desc(sda);
+		if (IS_ERR(priv->sda))
+			return PTR_ERR(priv->sda);
+		
+		DEBUG_LOG("request sda succ!\n");
+
+		/* request scl */
+		ret = gpio_request_one(scl, gf_scl, "scl");
+		if (ret < 0) {
+			DEBUG_LOG("request scl failed!\n");
+			DEBUG_LOG("release sda\n");
+			gpio_free(sda);
+			return -1;
+		}
+		priv->scl = gpio_to_desc(scl);
+		if (IS_ERR(priv->scl))
+			return PTR_ERR(priv->scl);
+
+		DEBUG_LOG("request scl succ!\n");
+
+		insmod_gpio = true;
+	} else {
+		if (pdata->sda_is_open_drain)
+			gflags_sda = GPIOD_OUT_HIGH;
+		else
+			gflags_sda = GPIOD_OUT_HIGH_OPEN_DRAIN;
+
+		if (pdata->scl_is_open_drain)
+			gflags_scl = GPIOD_OUT_HIGH;
+		else
+			gflags_scl = GPIOD_OUT_HIGH_OPEN_DRAIN;
+		DEBUG_LOG("used sda and scl with device tree\n");
+		priv->sda = i2c_gpio_get_desc(dev, "sda", 0, gflags_sda);
+		if (IS_ERR(priv->sda))
+			return PTR_ERR(priv->sda);
+
+		priv->scl = i2c_gpio_get_desc(dev, "scl", 1, gflags_scl);
+		if (IS_ERR(priv->scl))
+			return PTR_ERR(priv->scl);
+		
+		insmod_gpio = false;
+	}
 
 	if (gpiod_cansleep(priv->sda) || gpiod_cansleep(priv->scl))
 		dev_warn(dev, "Slow GPIO pins might wreak havoc into I2C/SMBus bus timing");
@@ -420,6 +534,9 @@ static int i2c_gpio_probe(struct platform_device *pdev)
 		bit_data->getscl = i2c_gpio_getscl;
 	bit_data->getsda = i2c_gpio_getsda;
 
+	udelay_data = bit_data;
+
+	/* Get udelay from device tree */
 	if (pdata->udelay)
 		bit_data->udelay = pdata->udelay;
 	else if (pdata->scl_is_output_only)
@@ -431,6 +548,17 @@ static int i2c_gpio_probe(struct platform_device *pdev)
 		bit_data->timeout = pdata->timeout;
 	else
 		bit_data->timeout = HZ / 10;		/* 100 ms */
+
+	/* If `insmod ko delay_us=x` (x>=0) */
+	if (delay_us >= 0) {
+		DEBUG_LOG("Get delay_us from insmod: %d\n", delay_us);
+		bit_data->udelay = delay_us;
+	} else {
+		DEBUG_LOG("Get delay_us from device tree: %d\n", bit_data->udelay);
+	}
+
+	DEBUG_LOG("delay us: %d\n", bit_data->udelay);
+	show_freq();
 
 	bit_data->data = priv;
 
@@ -464,6 +592,17 @@ static int i2c_gpio_probe(struct platform_device *pdev)
 
 	i2c_gpio_fault_injector_init(pdev);
 
+	/* Add udelay kobj */
+	curr_dev = &pdev->dev;
+	udelay_v = kobject_create_and_add("udelay_value", &curr_dev->kobj);
+	if(sysfs_create_file(udelay_v, &sysfs_test_attr.attr)){
+		DEBUG_LOG("Create sysfs file failed!\n");
+		kobject_put(udelay_v);
+        sysfs_remove_file(kernel_kobj, &sysfs_test_attr.attr);
+    }
+
+	udelay_value = udelay_data->udelay;
+
 	return 0;
 }
 
@@ -472,12 +611,21 @@ static int i2c_gpio_remove(struct platform_device *pdev)
 	struct i2c_gpio_private_data *priv;
 	struct i2c_adapter *adap;
 
+	if (insmod_gpio) {
+		gpio_free(scl);
+		gpio_free(sda);
+	}
+
 	i2c_gpio_fault_injector_exit(pdev);
 
 	priv = platform_get_drvdata(pdev);
 	adap = &priv->adap;
 
 	i2c_del_adapter(adap);
+
+	/* Remove udelay kobj */
+	kobject_put(udelay_v);
+    sysfs_remove_file(kernel_kobj, &sysfs_test_attr.attr);
 
 	return 0;
 }
@@ -499,6 +647,15 @@ static struct platform_driver i2c_gpio_driver = {
 	.probe		= i2c_gpio_probe,
 	.remove		= i2c_gpio_remove,
 };
+
+module_param(delay_us, int, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(delay_us, "An integer parameter for the i2c udelay");
+
+module_param(sda, int, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(sda, "sda gpio");
+
+module_param(scl, int, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(scl, "scl gpio");
 
 static int __init i2c_gpio_init(void)
 {

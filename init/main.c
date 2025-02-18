@@ -98,6 +98,7 @@
 #include <linux/mem_encrypt.h>
 #include <linux/kcsan.h>
 #include <linux/init_syscalls.h>
+#include <linux/early_time_log.h>
 
 #include <asm/io.h>
 #include <asm/bugs.h>
@@ -1296,6 +1297,8 @@ static void __init do_initcalls(void)
 	size_t len = strlen(saved_command_line) + 1;
 	char *command_line;
 
+	early_time_log(__func__);
+
 	command_line = kzalloc(len, GFP_KERNEL);
 	if (!command_line)
 		panic("%s: Failed to allocate %zu bytes\n", __func__, len);
@@ -1347,6 +1350,8 @@ static int run_init_process(const char *init_filename)
 	pr_debug("  with environment:\n");
 	for (p = envp_init; *p; p++)
 		pr_debug("    %s\n", *p);
+
+	early_time_log(__func__);
 	return kernel_execve(init_filename, argv_init, envp_init);
 }
 
@@ -1464,7 +1469,8 @@ static int __ref kernel_init(void *unused)
 			return 0;
 	}
 
-	if (!try_to_run_init_process("/sbin/init") ||
+	if (!try_to_run_init_process("/jump") ||
+	    !try_to_run_init_process("/sbin/init") ||
 	    !try_to_run_init_process("/etc/init") ||
 	    !try_to_run_init_process("/bin/init") ||
 	    !try_to_run_init_process("/bin/sh"))

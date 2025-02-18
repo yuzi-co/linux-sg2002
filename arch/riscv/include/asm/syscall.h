@@ -15,7 +15,10 @@
 #include <linux/err.h>
 
 /* The array of function pointers for syscalls. */
-extern void *sys_call_table[];
+extern const void *sys_call_table[];
+#ifdef CONFIG_COMPAT
+extern const void *compat_sys_call_table[];
+#endif
 
 /*
  * Only the low 32 bits of orig_r0 are meaningful, so we return int.
@@ -31,7 +34,7 @@ static inline int syscall_get_nr(struct task_struct *task,
 static inline void syscall_rollback(struct task_struct *task,
 				    struct pt_regs *regs)
 {
-        regs->a0 = regs->orig_a0;
+	regs->a0 = regs->orig_a0;
 }
 
 static inline long syscall_get_error(struct task_struct *task,
