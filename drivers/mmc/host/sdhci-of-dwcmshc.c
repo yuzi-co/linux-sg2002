@@ -26,6 +26,8 @@
 #include <linux/mfd/syscon.h>
 #include <linux/units.h>
 
+#include <linux/gpio/consumer.h>
+
 #include "sdhci-pltfm.h"
 #include "cqhci.h"
 #include "sdhci-cqhci.h"
@@ -230,6 +232,11 @@
  */
 #define DLL_ERROR_STS			BIT(1)
 
+#define FLAG_CV18XX_MSHC_CTRL_8_9	BIT(2)
+#define FLAG_CV18XX_MSHC_CTRL_16	BIT(3)
+#define FLAG_CV18XX_PHY_TX_RX_DLY	BIT(4)
+#define FLAG_CV18XX_PHY_CONFIG_CLEAR	BIT(5)
+#define FLAG_CV18XX_MSHC_CTRL_CLEAR	BIT(6)
 #define FLAG_IO_FIXED_1V8	BIT(0)
 
 #define BOUNDARY_OK(addr, len) \
@@ -308,6 +315,9 @@ struct dwcmshc_priv {
 	void *priv; /* pointer to SoC private stuff */
 	u16 delay_line;
 	u16 flags;
+	u32 cv18xx_phy_tx_rx_dly;
+	u32 cv18xx_phy_config_clear;
+	u32 cv18xx_mshc_ctrl_clear;
 };
 
 struct dwcmshc_pltfm_data {
@@ -1082,6 +1092,212 @@ static int th1520_init(struct device *dev,
 	return 0;
 }
 
+/*
+ * CV18xx/SG2002 SDIO1 init. All work DT-gated.
+ *
+ * clk_sd1 mux+div are BOTH in 0x0300207C per mainline sophgo,cv1800b-clk:
+ *   bits [9:8]    = mux select (0=osc 1=fpll 2=disppll)
+ *   bits [20:16]  = 5-bit divider
+ *   bit  0        = enable
+ * 0x40109 picks fpll(1500MHz)/4 = 375MHz = vendor MMC_MAX_CLOCK.
+ */
+static int cv18xx_sdhci_init(struct device *dev, struct sdhci_host *host,
+			     struct dwcmshc_priv *dwc_priv)
+{
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct dwcmshc_priv *priv = sdhci_pltfm_priv(pltfm_host);
+	struct reset_control *rst;
+	struct gpio_desc *wifi_pwr;
+	u32 pll_reg_addr, pll_div, bypass_reg_addr, bypass_bit;
+	u32 rtc2ap_reg, pad_cfg_reg, wifi_pinmux_reg;
+	u32 sd_pwrsw_reg, sd_pwrsw_val;
+	int ret;
+
+	rst = devm_reset_control_array_get_optional_exclusive(dev);
+	if (IS_ERR(rst))
+		return dev_err_probe(dev, PTR_ERR(rst),
+				     "failed to get reset control\n");
+	if (rst) {
+		reset_control_assert(rst);
+		usleep_range(1000, 2000);
+		ret = reset_control_deassert(rst);
+		if (ret) {
+			dev_err(dev, "failed to deassert reset: %d\n", ret);
+			return ret;
+		}
+		dev_info(dev, "cv18xx: reset deasserted\n");
+	}
+
+	if (!device_property_read_u32(dev, "sophgo,rtc2ap-bridge-reg",
+				      &rtc2ap_reg)) {
+		void __iomem *r = ioremap(rtc2ap_reg, 4);
+		if (r) {
+			u32 before = readl(r);
+			writel(0x1, r);
+			dev_info(dev, "cv18xx: rtc2ap 0x%08x: 0x%08x -> 0x%08x\n",
+				 rtc2ap_reg, before, readl(r));
+			iounmap(r);
+		}
+	}
+
+	if (!device_property_read_u32(dev, "sophgo,sd-pwrsw-ctrl-reg",
+				      &sd_pwrsw_reg)) {
+		void __iomem *r = ioremap(sd_pwrsw_reg, 4);
+		if (r) {
+			u32 before = readl(r);
+
+			sd_pwrsw_val = 0x9;
+			device_property_read_u32(dev, "sophgo,sd-pwrsw-ctrl-value",
+						 &sd_pwrsw_val);
+			writel((before & 0xfffffff0) | (sd_pwrsw_val & 0xf), r);
+			dev_info(dev, "cv18xx: SD PWRSW 0x%08x: 0x%08x -> 0x%08x\n",
+				 sd_pwrsw_reg, before, readl(r));
+			iounmap(r);
+		}
+	}
+
+	if (!device_property_read_u32(dev, "sophgo,sdio-clkgen-pll-reg",
+				      &pll_reg_addr) &&
+	    !device_property_read_u32(dev, "sophgo,sdio-clkgen-pll-div",
+				      &pll_div) &&
+	    !device_property_read_u32(dev, "sophgo,sdio-clkgen-bypass-reg",
+				      &bypass_reg_addr) &&
+	    !device_property_read_u32(dev, "sophgo,sdio-clkgen-bypass-bit",
+				      &bypass_bit)) {
+		void __iomem *clkgen = ioremap(0x03002000, 0x100);
+		if (clkgen)
+			dev_info(dev,
+				 "cv18xx: CLKGEN BEFORE +000=0x%08x +020=0x%08x +030=0x%08x +070=0x%08x +074=0x%08x +07C=0x%08x\n",
+				 readl(clkgen + 0x000),
+				 readl(clkgen + 0x020),
+				 readl(clkgen + 0x030),
+				 readl(clkgen + 0x070),
+				 readl(clkgen + 0x074),
+				 readl(clkgen + 0x07C));
+
+		{
+			void __iomem *pll_reg = ioremap(pll_reg_addr, 4);
+			if (pll_reg) {
+				u32 before = readl(pll_reg);
+				writel(pll_div, pll_reg);
+				dev_info(dev,
+					 "cv18xx: PLL 0x%08x: 0x%08x -> 0x%08x\n",
+					 pll_reg_addr, before, readl(pll_reg));
+				iounmap(pll_reg);
+			}
+		}
+		{
+			void __iomem *bypass_reg = ioremap(bypass_reg_addr, 4);
+			if (bypass_reg) {
+				u32 before = readl(bypass_reg);
+				writel(before & ~BIT(bypass_bit), bypass_reg);
+				dev_info(dev,
+					 "cv18xx: BYPASS 0x%08x: 0x%08x -> 0x%08x\n",
+					 bypass_reg_addr, before, readl(bypass_reg));
+				iounmap(bypass_reg);
+			}
+		}
+
+		if (clkgen) {
+			dev_info(dev,
+				 "cv18xx: CLKGEN AFTER  +000=0x%08x +020=0x%08x +030=0x%08x +070=0x%08x +074=0x%08x +07C=0x%08x\n",
+				 readl(clkgen + 0x000),
+				 readl(clkgen + 0x020),
+				 readl(clkgen + 0x030),
+				 readl(clkgen + 0x070),
+				 readl(clkgen + 0x074),
+				 readl(clkgen + 0x07C));
+			iounmap(clkgen);
+		}
+	}
+
+	if (device_property_read_bool(dev, "sophgo,mshc-ctrl-8-9"))
+		dwc_priv->flags |= FLAG_CV18XX_MSHC_CTRL_8_9;
+
+	if (device_property_read_bool(dev, "sophgo,mshc-ctrl-16"))
+		dwc_priv->flags |= FLAG_CV18XX_MSHC_CTRL_16;
+
+	if (!device_property_read_u32(dev, "sophgo,mshc-ctrl-clear",
+				      &dwc_priv->cv18xx_mshc_ctrl_clear)) {
+		dwc_priv->flags |= FLAG_CV18XX_MSHC_CTRL_CLEAR;
+		dev_info(dev, "cv18xx: MSHC_CTRL clear mask 0x%08x\n",
+			 dwc_priv->cv18xx_mshc_ctrl_clear);
+	}
+
+	if (!device_property_read_u32(dev, "sophgo,phy-tx-rx-dly",
+				      &dwc_priv->cv18xx_phy_tx_rx_dly)) {
+		dwc_priv->flags |= FLAG_CV18XX_PHY_TX_RX_DLY;
+		dev_info(dev, "cv18xx: PHY_TX_RX_DLY override 0x%08x\n",
+			 dwc_priv->cv18xx_phy_tx_rx_dly);
+	}
+
+	if (!device_property_read_u32(dev, "sophgo,phy-config-clear",
+				      &dwc_priv->cv18xx_phy_config_clear)) {
+		dwc_priv->flags |= FLAG_CV18XX_PHY_CONFIG_CLEAR;
+		dev_info(dev, "cv18xx: PHY_CONFIG clear mask 0x%08x\n",
+			 dwc_priv->cv18xx_phy_config_clear);
+	}
+
+	{
+		unsigned long core_rate = clk_get_rate(pltfm_host->clk);
+		unsigned long bus_rate = priv->bus_clk ?
+			clk_get_rate(priv->bus_clk) : 0;
+		dev_info(dev,
+			 "cv18xx: CCF rates: core=%lu Hz, bus=%lu Hz\n",
+			 core_rate, bus_rate);
+	}
+
+	if (!device_property_read_u32(dev, "sophgo,sdio-pad-cfg-base",
+				      &pad_cfg_reg)) {
+		void __iomem *pad = ioremap(pad_cfg_reg, 0x18);
+		if (pad) {
+			dev_info(dev,
+				 "cv18xx: pad BEFORE: D3=0x%08x D2=0x%08x D1=0x%08x D0=0x%08x CMD=0x%08x CLK=0x%08x\n",
+				 readl(pad + 0x00), readl(pad + 0x04),
+				 readl(pad + 0x08), readl(pad + 0x0C),
+				 readl(pad + 0x10), readl(pad + 0x14));
+			writel(1 << 2, pad + 0x00);
+			writel(1 << 2, pad + 0x04);
+			writel(1 << 2, pad + 0x08);
+			writel(1 << 2, pad + 0x0C);
+			writel(1 << 2, pad + 0x10);
+			writel(2 << 2, pad + 0x14);
+			dev_info(dev,
+				 "cv18xx: pad AFTER:  D3=0x%08x D2=0x%08x D1=0x%08x D0=0x%08x CMD=0x%08x CLK=0x%08x\n",
+				 readl(pad + 0x00), readl(pad + 0x04),
+				 readl(pad + 0x08), readl(pad + 0x0C),
+				 readl(pad + 0x10), readl(pad + 0x14));
+			iounmap(pad);
+		}
+	}
+
+	if (!device_property_read_u32(dev, "sophgo,wifi-power-pinmux-reg",
+				      &wifi_pinmux_reg)) {
+		void __iomem *pinmux = ioremap(wifi_pinmux_reg, 4);
+		if (pinmux) {
+			u32 before = readl(pinmux);
+			writel(0x3, pinmux);
+			dev_info(dev,
+				 "cv18xx: wifi-power pinmux 0x%08x: 0x%08x -> 0x%08x\n",
+				 wifi_pinmux_reg, before, readl(pinmux));
+			iounmap(pinmux);
+		}
+	}
+
+	wifi_pwr = devm_gpiod_get_optional(dev, "wifi-power", GPIOD_OUT_LOW);
+	if (IS_ERR(wifi_pwr)) {
+		dev_warn(dev, "wifi-power-gpio: %ld\n", PTR_ERR(wifi_pwr));
+	} else if (wifi_pwr) {
+		dev_info(dev, "cv18xx: wifi-power toggling low/60ms/high\n");
+		gpiod_set_value_cansleep(wifi_pwr, 0);
+		msleep(60);
+		gpiod_set_value_cansleep(wifi_pwr, 1);
+		msleep(10);
+	}
+
+	return 0;
+}
+
 static void cv18xx_sdhci_reset(struct sdhci_host *host, u8 mask)
 {
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
@@ -1098,16 +1314,26 @@ static void cv18xx_sdhci_reset(struct sdhci_host *host, u8 mask)
 
 	val = sdhci_readl(host, priv->vendor_specific_area1 + CV18XX_SDHCI_MSHC_CTRL);
 	val |= CV18XX_LATANCY_1T;
+	if (priv->flags & FLAG_CV18XX_MSHC_CTRL_8_9)
+		val |= BIT(8) | BIT(9);
+	if (priv->flags & FLAG_CV18XX_MSHC_CTRL_16)
+		val |= BIT(16);
+	if (priv->flags & FLAG_CV18XX_MSHC_CTRL_CLEAR)
+		val &= ~priv->cv18xx_mshc_ctrl_clear;
 	sdhci_writel(host, val, priv->vendor_specific_area1 + CV18XX_SDHCI_MSHC_CTRL);
 
 	val = sdhci_readl(host, priv->vendor_specific_area1 + CV18XX_SDHCI_PHY_CONFIG);
 	val |= CV18XX_PHY_TX_BPS;
+	if (priv->flags & FLAG_CV18XX_PHY_CONFIG_CLEAR)
+		val &= ~priv->cv18xx_phy_config_clear;
 	sdhci_writel(host, val, priv->vendor_specific_area1 + CV18XX_SDHCI_PHY_CONFIG);
 
 	val =  (FIELD_PREP(CV18XX_PHY_TX_DLY_MSK, 0) |
 		FIELD_PREP(CV18XX_PHY_TX_SRC_MSK, CV18XX_PHY_TX_SRC_INVERT_CLK_TX) |
 		FIELD_PREP(CV18XX_PHY_RX_DLY_MSK, 0) |
 		FIELD_PREP(CV18XX_PHY_RX_SRC_MSK, CV18XX_PHY_RX_SRC_INVERT_RX_CLK));
+	if (priv->flags & FLAG_CV18XX_PHY_TX_RX_DLY)
+		val = priv->cv18xx_phy_tx_rx_dly;
 	sdhci_writel(host, val, priv->vendor_specific_area1 + CV18XX_SDHCI_PHY_TX_RX_DLY);
 }
 
@@ -2186,6 +2412,7 @@ static const struct dwcmshc_pltfm_data sdhci_dwcmshc_cv18xx_pdata = {
 		.quirks = SDHCI_QUIRK_CAP_CLOCK_BASE_BROKEN,
 		.quirks2 = SDHCI_QUIRK2_PRESET_VALUE_BROKEN,
 	},
+	.init = cv18xx_sdhci_init,
 };
 
 static const struct dwcmshc_pltfm_data sdhci_dwcmshc_sg2042_pdata = {
