@@ -670,6 +670,23 @@ config PWM_SL28CPLD
 	  To compile this driver as a module, choose M here: the module
 	  will be called pwm-sl28cpld.
 
+config PWM_SOPHGO_CV1800
+	tristate "Sophgo CV1800 / SG2002 PWM support"
+	depends on ARCH_SOPHGO || COMPILE_TEST
+	depends on HAS_IOMEM && OF
+	help
+	  PWM driver for the four-channel PWM controller IP on the Sophgo
+	  CV1800 / SG2002 family of SoCs. Each instance handles four
+	  channels with independent period / duty / polarity controls.
+	  Up to four IP instances exist on the SoC at 0x03060000..0x03063000.
+
+	  Vendor BSP only ships a U-Boot driver for this IP — this is the
+	  Linux kernel side, written fresh against that as a register
+	  reference.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called pwm-cv1800.
+
 config PWM_SOPHGO_SG2042
 	tristate "Sophgo SG2042 PWM support"
 	depends on ARCH_SOPHGO || COMPILE_TEST
