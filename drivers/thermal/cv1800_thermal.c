@@ -14,6 +14,8 @@
 #include <linux/thermal.h>
 #include <linux/units.h>
 
+#include "thermal_hwmon.h"
+
 #define TEMPSEN_VERSION					0x0
 #define TEMPSEN_CTRL					0x4
 #define  TEMPSEN_CTRL_EN				BIT(0)
@@ -243,6 +245,8 @@ static int cv1800_thermal_probe(struct platform_device *pdev)
 					"cv1800_thermal", tdev);
 	if (ret < 0)
 		return dev_err_probe(&pdev->dev, ret, "failed to request irq\n");
+
+	devm_thermal_add_hwmon_sysfs(&pdev->dev, tdev);
 
 	platform_set_drvdata(pdev, ctz);
 
