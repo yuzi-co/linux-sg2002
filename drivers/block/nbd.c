@@ -1589,8 +1589,8 @@ static int nbd_start_device_ioctl(struct nbd_device *nbd)
 	if (max_part)
 		set_bit(GD_NEED_PART_SCAN, &nbd->disk->state);
 	mutex_unlock(&nbd->config_lock);
-	ret = wait_event_interruptible(config->recv_wq,
-					 atomic_read(&config->recv_threads) == 0);
+	ret = wait_event_killable(config->recv_wq,
+					  atomic_read(&config->recv_threads) == 0);
 	if (ret) {
 		sock_shutdown(nbd);
 		nbd_clear_que(nbd);
