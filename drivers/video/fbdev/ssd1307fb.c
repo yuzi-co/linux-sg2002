@@ -1016,6 +1016,7 @@ static int ssd1307fb_probe(struct i2c_client *client)
 	info->screen_buffer = vmem;
 	info->fix.smem_start = __pa(vmem);
 	info->fix.smem_len = vmem_size;
+	info->flags = FBINFO_VIRTFB;
 
 	fb_deferred_io_init(info);
 
