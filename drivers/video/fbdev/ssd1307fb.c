@@ -798,10 +798,16 @@ static int ssd1307fb_update_bl(struct backlight_device *bdev)
 
 	par->contrast = brightness;
 
-	ret = ssd1307fb_write_cmd(par->client, SSD1307FB_CONTRAST);
+	if (par->device_info->sh1107)
+		ret = sh1107fb_write_cmd(par->client, SSD1307FB_CONTRAST);
+	else
+		ret = ssd1307fb_write_cmd(par->client, SSD1307FB_CONTRAST);
 	if (ret < 0)
 		return ret;
-	ret = ssd1307fb_write_cmd(par->client, par->contrast);
+	if (par->device_info->sh1107)
+		ret = sh1107fb_write_cmd(par->client, par->contrast);
+	else
+		ret = ssd1307fb_write_cmd(par->client, par->contrast);
 	if (ret < 0)
 		return ret;
 	return 0;
@@ -824,12 +830,14 @@ static struct ssd1307fb_deviceinfo ssd1307fb_ssd1305_deviceinfo = {
 	.default_vcomh = 0x34,
 	.default_dclk_div = 1,
 	.default_dclk_frq = 7,
+	.default_contrast = 127,
 };
 
 static struct ssd1307fb_deviceinfo ssd1307fb_ssd1306_deviceinfo = {
 	.default_vcomh = 0x20,
 	.default_dclk_div = 1,
 	.default_dclk_frq = 8,
+	.default_contrast = 127,
 	.need_chargepump = 1,
 };
 
@@ -837,6 +845,7 @@ static struct ssd1307fb_deviceinfo ssd1307fb_ssd1307_deviceinfo = {
 	.default_vcomh = 0x20,
 	.default_dclk_div = 2,
 	.default_dclk_frq = 12,
+	.default_contrast = 127,
 	.need_pwm = 1,
 };
 
@@ -844,6 +853,16 @@ static struct ssd1307fb_deviceinfo ssd1307fb_ssd1309_deviceinfo = {
 	.default_vcomh = 0x34,
 	.default_dclk_div = 1,
 	.default_dclk_frq = 10,
+	.default_contrast = 127,
+};
+
+static struct ssd1307fb_deviceinfo ssd1307fb_sh1107_deviceinfo = {
+	.default_vcomh = 0x35,
+	.default_dclk_div = 2,
+	.default_dclk_frq = 5,
+	.default_contrast = 255,
+	.sh1107 = 1,
+	.sh1107_dcdc = 0x8b,
 };
 
 static const struct of_device_id ssd1307fb_of_match[] = {
@@ -863,6 +882,14 @@ static const struct of_device_id ssd1307fb_of_match[] = {
 		.compatible = "solomon,ssd1309fb-i2c",
 		.data = (void *)&ssd1307fb_ssd1309_deviceinfo,
 	},
+	{
+		.compatible = "sinowealth,sh1107",
+		.data = (void *)&ssd1307fb_sh1107_deviceinfo,
+	},
+	{
+		.compatible = "goldenmorning,gme128128",
+		.data = (void *)&ssd1307fb_sh1107_deviceinfo,
+	},
 	{},
 };
 MODULE_DEVICE_TABLE(of, ssd1307fb_of_match);
@@ -870,7 +897,7 @@ MODULE_DEVICE_TABLE(of, ssd1307fb_of_match);
 static int ssd1307fb_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
-	struct backlight_device *bl;
+	struct backlight_device *bl = NULL;
 	struct fb_info *info;
 	struct fb_deferred_io *ssd1307fb_defio;
 	u32 vmem_size;
@@ -941,7 +968,7 @@ static int ssd1307fb_probe(struct i2c_client *client)
 		device_property_read_bool(dev, "solomon,area-color-enable");
 	par->low_power = device_property_read_bool(dev, "solomon,low-power");
 
-	par->contrast = 127;
+	par->contrast = par->device_info->default_contrast ?: 127;
 	par->vcomh = par->device_info->default_vcomh;
 
 	/* Setup display timing */
@@ -1010,14 +1037,17 @@ static int ssd1307fb_probe(struct i2c_client *client)
 	if (ret)
 		goto regulator_enable_error;
 
-	bl = backlight_device_register("ssd1307fb-bl", dev, par, &ssd1307fb_bl_ops,
-				       NULL);
-	if (IS_ERR(bl)) {
-		ret = PTR_ERR(bl);
-		dev_err(dev, "unable to register backlight device: %d\n", ret);
-		goto panel_init_error;
+	if (!par->device_info->sh1107) {
+		bl = backlight_device_register("ssd1307fb-bl", dev, par,
+					       &ssd1307fb_bl_ops, NULL);
+		if (IS_ERR(bl)) {
+			ret = PTR_ERR(bl);
+			dev_err(dev, "unable to register backlight device: %d\n",
+				ret);
+			goto panel_init_error;
+		}
+		info->bl_dev = bl;
 	}
-	info->bl_dev = bl;
 
 	ret = register_framebuffer(info);
 	if (ret) {
@@ -1025,15 +1055,18 @@ static int ssd1307fb_probe(struct i2c_client *client)
 		goto fb_init_error;
 	}
 
-	bl->props.brightness = par->contrast;
-	bl->props.max_brightness = MAX_CONTRAST;
+	if (bl) {
+		bl->props.brightness = par->contrast;
+		bl->props.max_brightness = MAX_CONTRAST;
+	}
 
 	dev_info(dev, "fb%d: %s framebuffer device registered, using %d bytes of video memory\n", info->node, info->fix.id, vmem_size);
 
 	return 0;
 
 fb_init_error:
-	backlight_device_unregister(bl);
+	if (bl)
+		backlight_device_unregister(bl);
 panel_init_error:
 	pwm_disable(par->pwm);
 	pwm_put(par->pwm);
@@ -1054,9 +1087,13 @@ static void ssd1307fb_remove(struct i2c_client *client)
 	struct fb_info *info = i2c_get_clientdata(client);
 	struct ssd1307fb_par *par = info->par;
 
-	ssd1307fb_write_cmd(par->client, SSD1307FB_DISPLAY_OFF);
+	if (par->device_info->sh1107)
+		sh1107fb_write_cmd(par->client, SSD1307FB_DISPLAY_OFF);
+	else
+		ssd1307fb_write_cmd(par->client, SSD1307FB_DISPLAY_OFF);
 
-	backlight_device_unregister(info->bl_dev);
+	if (info->bl_dev)
+		backlight_device_unregister(info->bl_dev);
 
 	unregister_framebuffer(info);
 	pwm_disable(par->pwm);
@@ -1073,6 +1110,8 @@ static const struct i2c_device_id ssd1307fb_i2c_id[] = {
 	{ .name = "ssd1306fb" },
 	{ .name = "ssd1307fb" },
 	{ .name = "ssd1309fb" },
+	{ .name = "sh1107fb" },
+	{ .name = "gme128128" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, ssd1307fb_i2c_id);
