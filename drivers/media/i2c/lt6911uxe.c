@@ -5,6 +5,7 @@
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
+#include <linux/mod_devicetable.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
@@ -21,7 +22,12 @@
 #define LT6911UXE_CHIP_ID		0x2102
 #define REG_CHIP_ID			CCI_REG16(0xe100)
 
+#define LT6911UXC_CHIP_ID		0x1704
+#define LT6911_CHIP_ID			0x1605
+#define REG_LT6911UXC_CHIP_ID		CCI_REG16(0x8100)
+#define REG_LT6911_CHIP_ID		CCI_REG16(0xa000)
 #define REG_ENABLE_I2C			CCI_REG8(0xe0ee)
+#define REG_LT6911_ENABLE_I2C		CCI_REG8(0x80ee)
 #define REG_HALF_PIX_CLK		CCI_REG24(0xe085)
 #define REG_BYTE_CLK			CCI_REG24(0xe092)
 #define REG_HALF_H_TOTAL		CCI_REG16(0xe088)
@@ -35,6 +41,13 @@
 #define REG_INT_HDMI			CCI_REG8(0xe084)
 #define INT_VIDEO_DISAPPEAR		0x0
 #define INT_VIDEO_READY			0x1
+
+#define REG_LT6911UXC_HDMI_STATUS	CCI_REG8(0x86a3)
+#define LT6911UXC_HDMI_STABLE		0x55
+#define LT6911UXC_HDMI_UNSTABLE		0x88
+#define REG_LT6911UXC_H_ACTIVE		CCI_REG16(0x85ea)
+#define REG_LT6911UXC_V_ACTIVE		CCI_REG16(0x85f0)
+#define LT6911_DEFAULT_FPS		60
 
 #define LT6911UXE_DEFAULT_LANES		4
 #define LT6911_PAGE_CONTROL		0xff
@@ -98,7 +111,10 @@ struct lt6911uxe {
 	struct regmap *regmap;
 	struct gpio_desc *reset_gpio;
 	struct gpio_desc *irq_gpio;
+	bool is_uxc;
 };
+
+static int lt6911uxe_status_update(struct lt6911uxe *lt6911uxe);
 
 static const struct v4l2_event lt6911uxe_ev_source_change = {
 	.type = V4L2_EVENT_SOURCE_CHANGE,
@@ -184,6 +200,10 @@ static int lt6911uxe_query_dv_timings(struct v4l2_subdev *sd, unsigned int pad,
 	struct v4l2_subdev_state *state;
 	int ret;
 
+	ret = lt6911uxe_status_update(to_lt6911uxe(sd));
+	if (ret && ret != -ENOLINK)
+		return ret;
+
 	state = v4l2_subdev_lock_and_get_active_state(sd);
 	ret = lt6911uxe_get_detected_timings(sd, timings);
 	if (ret) {
@@ -222,6 +242,71 @@ static int lt6911uxe_status_update(struct lt6911uxe *lt6911uxe)
 	u64 byte_clk, half_pix_clk, fps, format;
 	u64 half_htotal, vtotal, half_width, height;
 	int ret = 0;
+
+	if (lt6911uxe->is_uxc) {
+		u64 status, width;
+		u64 pixel_clk;
+		int disable_ret = 0;
+
+		cci_write(lt6911uxe->regmap, REG_LT6911_ENABLE_I2C, 0x1, &ret);
+		cci_read(lt6911uxe->regmap, REG_LT6911UXC_HDMI_STATUS,
+			 &status, &ret);
+		if (ret)
+			goto uxc_disable;
+
+		switch (status) {
+		case LT6911UXC_HDMI_STABLE:
+			cci_read(lt6911uxe->regmap, REG_LT6911UXC_H_ACTIVE,
+				 &width, &ret);
+			cci_read(lt6911uxe->regmap, REG_LT6911UXC_V_ACTIVE,
+				 &height, &ret);
+			if (ret)
+				goto uxc_disable;
+
+			if (!width || width > 3840 || !height || height > 2160) {
+				dev_dbg(&client->dev,
+					"invalid UXC width or height: %llu x %llu\n",
+					width, height);
+				ret = -EINVAL;
+				goto uxc_disable;
+			}
+
+			lt6911uxe->cur_mode.width = width;
+			lt6911uxe->cur_mode.height = height;
+			lt6911uxe->cur_mode.fps = LT6911_DEFAULT_FPS;
+			lt6911uxe->cur_mode.htotal = width + 160;
+			lt6911uxe->cur_mode.vtotal = height + 45;
+
+			pixel_clk = (u64)lt6911uxe->cur_mode.htotal *
+				    lt6911uxe->cur_mode.vtotal *
+				    LT6911_DEFAULT_FPS;
+			lt6911uxe->cur_mode.pixel_clk = pixel_clk;
+			lt6911uxe->cur_mode.link_freq = div_u64(pixel_clk * 16,
+							 lt6911uxe->cur_mode.lanes);
+			break;
+
+		case LT6911UXC_HDMI_UNSTABLE:
+			lt6911uxe->cur_mode.height = 0;
+			lt6911uxe->cur_mode.width = 0;
+			lt6911uxe->cur_mode.fps = 0;
+			lt6911uxe->cur_mode.link_freq = 0;
+			ret = -ENOLINK;
+			break;
+
+		default:
+			ret = -ENOLINK;
+			break;
+		}
+
+uxc_disable:
+		cci_write(lt6911uxe->regmap, REG_LT6911_ENABLE_I2C, 0x0,
+			  &disable_ret);
+		if (!ret && disable_ret)
+			ret = disable_ret;
+		v4l2_subdev_notify_event(&lt6911uxe->sd,
+					  &lt6911uxe_ev_source_change);
+		return ret;
+	}
 
 	/* Read interrupt event */
 	cci_read(lt6911uxe->regmap, REG_INT_HDMI, &int_event, &ret);
@@ -350,6 +435,10 @@ static int lt6911uxe_enable_streams(struct v4l2_subdev *sd,
 	struct lt6911uxe *lt6911uxe = to_lt6911uxe(sd);
 	int ret;
 
+	/* The UXC firmware owns its always-on CSI transmitter configuration. */
+	if (lt6911uxe->is_uxc)
+		return 0;
+
 	ret = pm_runtime_resume_and_get(&client->dev);
 	if (ret < 0)
 		return ret;
@@ -374,6 +463,9 @@ static int lt6911uxe_disable_streams(struct v4l2_subdev *sd,
 	struct lt6911uxe *lt6911uxe = to_lt6911uxe(sd);
 	struct i2c_client *client = v4l2_get_subdevdata(&lt6911uxe->sd);
 	int ret;
+
+	if (lt6911uxe->is_uxc)
+		return 0;
 
 	ret = cci_write(lt6911uxe->regmap, REG_MIPI_TX_CTRL, 0x0, NULL);
 	if (ret)
@@ -495,7 +587,8 @@ static int lt6911uxe_fwnode_parse(struct lt6911uxe *lt6911uxe,
 	int ret;
 
 	endpoint = fwnode_graph_get_endpoint_by_id(dev_fwnode(dev), 0, 0,
-						   FWNODE_GRAPH_ENDPOINT_NEXT);
+						   FWNODE_GRAPH_ENDPOINT_NEXT |
+						   FWNODE_GRAPH_DEVICE_DISABLED);
 	if (!endpoint)
 		return dev_err_probe(dev, -EPROBE_DEFER,
 				     "endpoint node not found\n");
@@ -536,6 +629,29 @@ static int lt6911uxe_identify_module(struct lt6911uxe *lt6911uxe,
 	cci_write(lt6911uxe->regmap, REG_ENABLE_I2C, 0x1, &ret);
 	cci_read(lt6911uxe->regmap, REG_CHIP_ID, &val, &ret);
 	cci_write(lt6911uxe->regmap, REG_ENABLE_I2C, 0x0, &ret);
+	if (!ret && val == LT6911UXE_CHIP_ID)
+		return 0;
+
+	ret = 0;
+	cci_write(lt6911uxe->regmap, REG_LT6911_ENABLE_I2C, 0x1, &ret);
+	cci_read(lt6911uxe->regmap, REG_LT6911UXC_CHIP_ID, &val, &ret);
+	cci_write(lt6911uxe->regmap, REG_LT6911_ENABLE_I2C, 0x0, &ret);
+	if (!ret && val == LT6911UXC_CHIP_ID) {
+		lt6911uxe->is_uxc = true;
+		return 0;
+	}
+
+	ret = 0;
+	cci_write(lt6911uxe->regmap, REG_LT6911_ENABLE_I2C, 0x1, &ret);
+	cci_read(lt6911uxe->regmap, REG_LT6911_CHIP_ID, &val, &ret);
+	cci_write(lt6911uxe->regmap, REG_LT6911_ENABLE_I2C, 0x0, &ret);
+	if (!ret && val == LT6911_CHIP_ID)
+		return 0;
+
+	ret = 0;
+	cci_write(lt6911uxe->regmap, REG_ENABLE_I2C, 0x1, &ret);
+	cci_read(lt6911uxe->regmap, REG_CHIP_ID, &val, &ret);
+	cci_write(lt6911uxe->regmap, REG_ENABLE_I2C, 0x0, &ret);
 	if (ret)
 		return dev_err_probe(dev, ret, "fail to read chip id\n");
 
@@ -573,7 +689,8 @@ static void lt6911uxe_remove(struct i2c_client *client)
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct lt6911uxe *lt6911uxe = to_lt6911uxe(sd);
 
-	free_irq(gpiod_to_irq(lt6911uxe->irq_gpio), lt6911uxe);
+	if (lt6911uxe->irq_gpio)
+		free_irq(gpiod_to_irq(lt6911uxe->irq_gpio), lt6911uxe);
 	v4l2_async_unregister_subdev(sd);
 	v4l2_subdev_cleanup(sd);
 	media_entity_cleanup(&sd->entity);
@@ -605,7 +722,7 @@ static int lt6911uxe_probe(struct i2c_client *client)
 		return dev_err_probe(dev, PTR_ERR(lt6911uxe->reset_gpio),
 				     "failed to get reset gpio\n");
 
-	lt6911uxe->irq_gpio = devm_gpiod_get(dev, "hpd", GPIOD_IN);
+	lt6911uxe->irq_gpio = devm_gpiod_get_optional(dev, "hpd", GPIOD_IN);
 	if (IS_ERR(lt6911uxe->irq_gpio))
 		return dev_err_probe(dev, PTR_ERR(lt6911uxe->irq_gpio),
 				     "failed to get hpd gpio\n");
@@ -651,13 +768,15 @@ static int lt6911uxe_probe(struct i2c_client *client)
 	}
 
 	/* Setting irq */
-	ret = request_threaded_irq(gpiod_to_irq(lt6911uxe->irq_gpio), NULL,
-				   lt6911uxe_threaded_irq_fn,
-				   IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING |
-				   IRQF_ONESHOT, NULL, lt6911uxe);
-	if (ret) {
-		dev_err(dev, "failed to request IRQ: %d\n", ret);
-		goto subdev_cleanup;
+	if (lt6911uxe->irq_gpio) {
+		ret = request_threaded_irq(gpiod_to_irq(lt6911uxe->irq_gpio), NULL,
+					   lt6911uxe_threaded_irq_fn,
+					   IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING |
+					   IRQF_ONESHOT, NULL, lt6911uxe);
+		if (ret) {
+			dev_err(dev, "failed to request IRQ: %d\n", ret);
+			goto subdev_cleanup;
+		}
 	}
 
 	ret = v4l2_async_register_subdev_sensor(&lt6911uxe->sd);
@@ -669,7 +788,8 @@ static int lt6911uxe_probe(struct i2c_client *client)
 	return 0;
 
 free_irq:
-	free_irq(gpiod_to_irq(lt6911uxe->irq_gpio), lt6911uxe);
+	if (lt6911uxe->irq_gpio)
+		free_irq(gpiod_to_irq(lt6911uxe->irq_gpio), lt6911uxe);
 
 subdev_cleanup:
 	v4l2_subdev_cleanup(&lt6911uxe->sd);
@@ -691,10 +811,18 @@ static const struct acpi_device_id lt6911uxe_acpi_ids[] = {
 };
 MODULE_DEVICE_TABLE(acpi, lt6911uxe_acpi_ids);
 
+static const struct of_device_id lt6911uxe_of_match[] = {
+	{ .compatible = "lontium,lt6911uxe" },
+	{ .compatible = "lontium,lt6911" },
+	{}
+};
+MODULE_DEVICE_TABLE(of, lt6911uxe_of_match);
+
 static struct i2c_driver lt6911uxe_i2c_driver = {
 	.driver = {
 		.name = "lt6911uxe",
 		.acpi_match_table = ACPI_PTR(lt6911uxe_acpi_ids),
+		.of_match_table = lt6911uxe_of_match,
 	},
 	.probe = lt6911uxe_probe,
 	.remove = lt6911uxe_remove,
