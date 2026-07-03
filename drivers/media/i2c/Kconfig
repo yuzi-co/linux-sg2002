@@ -1375,7 +1375,7 @@ config VIDEO_IT6625
 
 config VIDEO_LT6911UXE
 	tristate "Lontium LT6911UXE decoder"
-	depends on ACPI && VIDEO_DEV && I2C
+	depends on (ACPI || OF) && VIDEO_DEV && I2C
 	select V4L2_FWNODE
 	select V4L2_CCI_I2C
 	select MEDIA_CONTROLLER
