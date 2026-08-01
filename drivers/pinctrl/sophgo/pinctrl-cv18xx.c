@@ -325,8 +325,17 @@ static int cv1800_pinconf_compute_config(struct sophgo_pinctrl *pctrl,
 		return -EINVAL;
 
 	type = cv1800_pin_io_type(pin);
-	if (type == IO_TYPE_ETH || type == IO_TYPE_AUDIO)
-		return -ENOTSUPP;
+	if (type == IO_TYPE_ETH || type == IO_TYPE_AUDIO) {
+		for (i = 0; i < num_configs; i++) {
+			if (pinconf_to_config_param(configs[i]) !=
+			    PIN_CONFIG_POWER_SOURCE)
+				return -ENOTSUPP;
+		}
+
+		*value = 0;
+		*mask = 0;
+		return 0;
+	}
 
 	for (i = 0; i < num_configs; i++) {
 		int param = pinconf_to_config_param(configs[i]);
@@ -387,6 +396,9 @@ static int cv1800_set_pinconf_config(struct sophgo_pinctrl *pctrl,
 	struct cv1800_pin *pin = sophgo_to_cv1800_pin(sp);
 	void __iomem *addr;
 	u32 reg;
+
+	if (!mask)
+		return 0;
 
 	addr = cv1800_pinctrl_get_component_addr(priv, &pin->conf);
 
