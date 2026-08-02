@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config VIDEO_SOPHGO_SG2002_CSI
+	tristate "Sophgo SG2002 CSI-2 capture"
+	depends on ARCH_SOPHGO || COMPILE_TEST
+	depends on V4L_PLATFORM_DRIVERS
+	depends on VIDEO_DEV
+	depends on OF
+	select MEDIA_CONTROLLER
+	select MFD_SYSCON
+	select VIDEO_V4L2_SUBDEV_API
+	select VIDEOBUF2_DMA_CONTIG
+	select V4L2_FWNODE
+	help
+	  Support the CSI-2 receiver and direct-to-memory video input path in
+	  the Sophgo SG2002/CV181x video subsystem. The initial implementation
+	  supports one four-lane YUV422 input on CSI MAC0 and exposes it as a
+	  V4L2 capture device.
