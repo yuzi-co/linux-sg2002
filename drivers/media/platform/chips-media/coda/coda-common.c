@@ -124,6 +124,21 @@ void coda_disable_clocks(struct coda_dev *dev)
 	clk_disable_unprepare(dev->clk_per);
 }
 
+int coda_reset(struct coda_dev *dev)
+{
+	int ret;
+
+	if (!dev->devtype->rstc_assert_deassert)
+		return reset_control_reset(dev->rstc);
+
+	/* SG2002's active-low H264 reset has no reset pulse duration. */
+	ret = reset_control_assert(dev->rstc);
+	if (ret)
+		return ret;
+
+	return reset_control_deassert(dev->rstc);
+}
+
 void coda_write_base(struct coda_ctx *ctx, struct coda_q_data *q_data,
 		     struct vb2_v4l2_buffer *buf, unsigned int reg_y)
 {
@@ -2876,7 +2891,7 @@ static int coda_hw_init(struct coda_dev *dev)
 		return ret;
 
 	if (dev->rstc) {
-		ret = reset_control_reset(dev->rstc);
+		ret = coda_reset(dev);
 		if (ret)
 			goto err_disable_clocks;
 	}
@@ -3347,6 +3362,7 @@ static const struct coda_devtype sg2002_coda980_devdata = {
 	.uses_bulk_clocks	= true,
 	.requires_firmware_name	= true,
 	.nv21_to_nv12		= true,
+	.rstc_assert_deassert	= true,
 	.has_software_reset	= true,
 	.skip_code_download	= true,
 };

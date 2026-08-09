@@ -87,6 +87,7 @@ struct coda_devtype {
 	bool			nv21_to_nv12;
 	bool			has_coda9_bus_reset;
 	bool			has_software_reset;
+	bool			rstc_assert_deassert;
 	bool			skip_code_download;
 };
 
@@ -347,6 +348,7 @@ int coda_decoder_queue_init(void *priv, struct vb2_queue *src_vq,
 			    struct vb2_queue *dst_vq);
 
 int coda_hw_reset(struct coda_ctx *ctx);
+int coda_reset(struct coda_dev *dev);
 
 void coda_fill_bitstream(struct coda_ctx *ctx, struct list_head *buffer_list);
 
