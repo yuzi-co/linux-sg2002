@@ -671,6 +671,39 @@ static int coda_encode_header(struct coda_ctx *ctx, struct vb2_v4l2_buffer *buf,
 			header_code |= CODA9_HEADER_FRAME_CROP;
 		}
 	}
+	if (dev->devtype->has_extended_h264_header &&
+	    ctx->codec->dst_fourcc == V4L2_PIX_FMT_H264) {
+		if (header_code == CODA_HEADER_H264_SPS) {
+			u32 profile;
+
+			switch (ctx->params.h264_profile_idc) {
+			case 66:
+				profile = 0;
+				break;
+			case 77:
+				profile = 1;
+				break;
+			case 100:
+			default:
+				profile = 2;
+				break;
+			}
+
+			coda_write(dev, profile,
+				   CODA9_CMD_ENC_HEADER_PROFILE);
+			coda_write(dev, 0,
+				   CODA9_CMD_ENC_HEADER_CHROMA_FORMAT);
+			coda_write(dev, 0,
+				   CODA9_CMD_ENC_HEADER_FIELD_FLAG);
+		} else if (header_code == CODA_HEADER_H264_PPS) {
+			coda_write(dev, 0,
+				   CODA9_CMD_ENC_HEADER_CABAC_MODE);
+			coda_write(dev, 0,
+				   CODA9_CMD_ENC_HEADER_CABAC_INIT_IDC);
+			coda_write(dev, 0,
+				   CODA9_CMD_ENC_HEADER_TRANSFORM_8X8);
+		}
+	}
 	coda_write(dev, header_code, CODA_CMD_ENC_HEADER_CODE);
 	ret = coda_command_sync(ctx, CODA_COMMAND_ENCODE_HEADER);
 	if (ret < 0) {

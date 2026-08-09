@@ -91,6 +91,7 @@ struct coda_devtype {
 	bool			has_software_reset;
 	bool			rstc_assert_deassert;
 	bool			skip_code_download;
+	bool			has_extended_h264_header;
 };
 
 struct coda_aux_buf {
