@@ -2646,10 +2646,7 @@ int coda_encoder_queue_init(void *priv, struct vb2_queue *src_vq,
 		return ret;
 
 	dst_vq->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-	if (ctx->dev->devtype->nv21_to_nv12)
-		dst_vq->io_modes = VB2_MMAP;
-	else
-		dst_vq->io_modes = VB2_DMABUF | VB2_MMAP;
+	dst_vq->io_modes = VB2_DMABUF | VB2_MMAP;
 	dst_vq->mem_ops = &vb2_dma_contig_memops;
 
 	return coda_queue_init(priv, dst_vq);
@@ -2694,7 +2691,9 @@ static int coda_open(struct file *file)
 	if (!ctx)
 		return -ENOMEM;
 
-	if (dev->devtype->product == CODA_DX6)
+	if (dev->devtype->max_instances)
+		max = dev->devtype->max_instances - 1;
+	else if (dev->devtype->product == CODA_DX6)
 		max = CODADX6_MAX_INSTANCES - 1;
 	idx = ida_alloc_max(&dev->ida, max, GFP_KERNEL);
 	if (idx < 0) {
