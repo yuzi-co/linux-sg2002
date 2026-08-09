@@ -3344,6 +3344,7 @@ static const struct coda_devtype sg2002_coda980_devdata = {
 	/* The SG2002 firmware implements the Coda9 register command ABI. */
 	.product		= CODA_960,
 	.firmware_product	= CODA980_PRODUCT_CODE,
+	.firmware_product_reg	= CODA9_GDI_PRODUCT_CODE,
 	.codecs			= coda9_codecs,
 	.num_codecs		= ARRAY_SIZE(coda9_codecs),
 	.vdevs			= sg2002_coda980_video_devices,

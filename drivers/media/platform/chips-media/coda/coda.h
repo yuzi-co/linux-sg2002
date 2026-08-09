@@ -64,6 +64,8 @@ struct coda_devtype {
 	enum coda_product	product;
 	/* Optional product value returned by the firmware query command. */
 	u16			firmware_product;
+	/* Optional register containing a product code separate from VERNUM. */
+	u32			firmware_product_reg;
 	const struct coda_codec	*codecs;
 	unsigned int		num_codecs;
 	const struct coda_video_device **vdevs;
