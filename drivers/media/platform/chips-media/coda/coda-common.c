@@ -2751,23 +2751,33 @@ static int coda_open(struct file *file)
 
 	coda_dbg(1, ctx, "open instance (%p)\n", ctx);
 
-	switch (dev->devtype->product) {
-	case CODA_960:
+	if (dev->devtype->has_coda980_h264_abi) {
 		/*
-		 * Enabling the BWB when decoding can hang the firmware with
-		 * certain streams. The issue was tracked as ENGR00293425 by
-		 * Freescale. As a workaround, disable BWB for all decoders.
-		 * The enable_bwb module parameter allows to override this.
+		 * Coda980 uses 128-bit little-endian frame accesses.  Keep the
+		 * context state in sync with the firmware default: it is restored
+		 * before every BIT command by coda_command_async().
 		 */
-		if (enable_bwb || ctx->inst_type == CODA_INST_ENCODER)
-			ctx->frame_mem_ctrl = CODA9_FRAME_ENABLE_BWB;
-		fallthrough;
-	case CODA_HX4:
-	case CODA_7541:
+		ctx->frame_mem_ctrl = CODA980_FRAME_MEM_CTRL_DEFAULT;
 		ctx->reg_idx = 0;
-		break;
-	default:
-		ctx->reg_idx = idx;
+	} else {
+		switch (dev->devtype->product) {
+		case CODA_960:
+			/*
+			 * Enabling the BWB when decoding can hang the firmware with
+			 * certain streams. The issue was tracked as ENGR00293425 by
+			 * Freescale. As a workaround, disable BWB for all decoders.
+			 * The enable_bwb module parameter allows to override this.
+			 */
+			if (enable_bwb || ctx->inst_type == CODA_INST_ENCODER)
+				ctx->frame_mem_ctrl = CODA9_FRAME_ENABLE_BWB;
+			fallthrough;
+		case CODA_HX4:
+		case CODA_7541:
+			ctx->reg_idx = 0;
+			break;
+		default:
+			ctx->reg_idx = idx;
+		}
 	}
 	if (ctx->dev->vdoa && !disable_vdoa) {
 		ctx->vdoa = vdoa_context_create(dev->vdoa);
@@ -2961,7 +2971,10 @@ static int coda_hw_init(struct coda_dev *dev)
 		coda_write(dev, CODA7_STREAM_BUF_PIC_FLUSH,
 			   CODA_REG_BIT_STREAM_CTRL);
 	}
-	if (dev->devtype->product == CODA_960)
+	if (dev->devtype->has_coda980_h264_abi)
+		coda_write(dev, CODA980_FRAME_MEM_CTRL_DEFAULT,
+				CODA_REG_BIT_FRAME_MEM_CTRL);
+	else if (dev->devtype->product == CODA_960)
 		coda_write(dev, CODA9_FRAME_ENABLE_BWB,
 				CODA_REG_BIT_FRAME_MEM_CTRL);
 	else
