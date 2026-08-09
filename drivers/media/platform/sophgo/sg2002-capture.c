@@ -51,6 +51,13 @@
 #define MAC_CSI_IRQ_CTRL	(MAC_CSI_BASE + 0x04)
 #define MAC_CSI_IRQ_MASK	GENMASK(7, 0)
 #define MAC_CSI_IRQ_CLEAR	GENMASK(15, 8)
+#define MAC_CSI_IRQ_ECC_ERR	BIT(0)
+#define MAC_CSI_IRQ_CRC_ERR	BIT(1)
+#define MAC_CSI_IRQ_HDR_ERR	BIT(2)
+#define MAC_CSI_IRQ_WC_ERR	BIT(3)
+#define MAC_CSI_IRQ_FIFO_FULL	BIT(4)
+#define MAC_CSI_IRQ_ERRORS	GENMASK(4, 0)
+#define MAC_CSI_IRQ_RESERVED	GENMASK(7, 5)
 #define MAC_CSI_VC_MAP		(MAC_CSI_BASE + 0x18)
 #define MAC_CSI_DECODE_STATUS	(MAC_CSI_BASE + 0x40)
 #define MAC_CSI_IRQ_STATUS	(MAC_CSI_BASE + 0x60)
@@ -98,8 +105,6 @@
 #define VI_CSIBDG_INT_STATUS0	(VI_CSIBDG0 + 0xe0)
 #define VI_CSIBDG_INT_STATUS1	(VI_CSIBDG0 + 0xe4)
 #define VI_CSIBDG_DEBUG		(VI_CSIBDG0 + 0xe8)
-#define VI_ISP_INT_EVENT0_SINGLE_YUV 0x800023ff
-#define VI_ISP_INT_EVENT2_SINGLE_YUV 0x000105ff
 #define VI_CSIBDG_CSI_MODE	GENMASK(1, 0)
 #define VI_CSIBDG_YUV_INPUT	BIT(2)
 #define VI_CSIBDG_CH0_DMA	BIT(6)
@@ -143,9 +148,12 @@
 #define VI_ISP_SW_RST		(VI_ISP_TOP + 0x34)
 #define VI_ISP_BLK_IDLE		(VI_ISP_TOP + 0x38)
 #define VI_ISP_SCENARIOS_MASK	GENMASK(22, 2)
-/* Vendor single-YUV defaults are FE->BE->DRAM (offline postraw): enable
- * PRE2BE_L, BE_WDMA_L and FE DMA sharing. Bit 23 is preserved separately. */
-#define VI_ISP_SCENARIOS_SINGLE_YUV 0x00400204
+#define VI_ISP_SCENARIO_PRE2BE_L	BIT(2)
+#define VI_ISP_SCENARIO_BE_WDMA_L	BIT(9)
+#define VI_ISP_SCENARIO_FE_DMA_SHARE	BIT(22)
+#define VI_ISP_SCENARIOS_SINGLE_YUV \
+	(VI_ISP_SCENARIO_PRE2BE_L | VI_ISP_SCENARIO_BE_WDMA_L | \
+	 VI_ISP_SCENARIO_FE_DMA_SHARE)
 #define VI_ISP_FRAME_DONE_FE0_CH0 BIT(0)
 #define VI_ISP_FE0_HW_TRIGGER	BIT(0)
 #define VI_ISP_FE0_HW_SHADOW	BIT(16)
@@ -291,6 +299,29 @@ static void sg2002_update_bits(void __iomem *base, u32 reg, u32 mask, u32 val)
 	value &= ~mask;
 	value |= val & mask;
 	writel(value, base + reg);
+}
+
+static void sg2002_csi_irq_enable(struct sg2002_capture *cap, bool enable)
+{
+	u32 mask = enable ? MAC_CSI_IRQ_RESERVED : FIELD_MAX(MAC_CSI_IRQ_MASK);
+
+	sg2002_update_bits(cap->mac, MAC_CSI_IRQ_CTRL,
+			   MAC_CSI_IRQ_MASK | MAC_CSI_IRQ_CLEAR,
+			   FIELD_PREP(MAC_CSI_IRQ_MASK, mask) |
+			   FIELD_PREP(MAC_CSI_IRQ_CLEAR,
+				      FIELD_MAX(MAC_CSI_IRQ_CLEAR)));
+}
+
+static void sg2002_csibdg_clear_status(struct sg2002_capture *cap)
+{
+	u32 status;
+
+	status = readl(cap->vi + VI_CSIBDG_INT_STATUS0);
+	if (status)
+		writel(status, cap->vi + VI_CSIBDG_INT_STATUS0);
+	status = readl(cap->vi + VI_CSIBDG_INT_STATUS1);
+	if (status)
+		writel(status, cap->vi + VI_CSIBDG_INT_STATUS1);
 }
 
 static void sg2002_ddr_restore_clock_gating(struct sg2002_capture *cap)
@@ -490,10 +521,7 @@ static void sg2002_csi_enable(struct sg2002_capture *cap, bool enable)
 	u32 value;
 
 	if (!enable) {
-		sg2002_update_bits(cap->mac, MAC_CSI_IRQ_CTRL,
-				    MAC_CSI_IRQ_MASK | MAC_CSI_IRQ_CLEAR,
-				    FIELD_PREP(MAC_CSI_IRQ_MASK, 0xff) |
-				    FIELD_PREP(MAC_CSI_IRQ_CLEAR, 0xff));
+		sg2002_csi_irq_enable(cap, false);
 		sg2002_update_bits(cap->wrap, WRAP_PHY4_LANE_ENABLE,
 				    WRAP_PHY4_DESKEW_LANES, 0);
 		sg2002_update_bits(cap->wrap, WRAP_TOP_POWER,
@@ -506,10 +534,7 @@ static void sg2002_csi_enable(struct sg2002_capture *cap, bool enable)
 
 	/* Match cif_streaming(): force the warm PHY fully off before its
 	 * selectors, analogue front end, and lane enables are changed. */
-	sg2002_update_bits(cap->mac, MAC_CSI_IRQ_CTRL,
-			    MAC_CSI_IRQ_MASK | MAC_CSI_IRQ_CLEAR,
-			    FIELD_PREP(MAC_CSI_IRQ_MASK, 0xff) |
-			    FIELD_PREP(MAC_CSI_IRQ_CLEAR, 0xff));
+	sg2002_csi_irq_enable(cap, false);
 	sg2002_update_bits(cap->wrap, WRAP_PHY4_LANE_ENABLE,
 			    WRAP_PHY4_DESKEW_LANES, 0);
 	sg2002_update_bits(cap->wrap, WRAP_TOP_POWER,
@@ -529,11 +554,6 @@ static void sg2002_csi_enable(struct sg2002_capture *cap, bool enable)
 				       SG2002_NUM_DATA_LANES - 1));
 	writel(0x3210, cap->mac + MAC_CSI_VC_MAP);
 	sg2002_update_bits(cap->mac, MAC_CSI_VGEN, MAC_CSI_VGEN_MODE, 0);
-	sg2002_update_bits(cap->mac, MAC_CSI_IRQ_CTRL,
-			    MAC_CSI_IRQ_MASK | MAC_CSI_IRQ_CLEAR,
-			    FIELD_PREP(MAC_CSI_IRQ_MASK, 0xff) |
-			    FIELD_PREP(MAC_CSI_IRQ_CLEAR, 0xff));
-
 	sg2002_update_bits(cap->wrap, WRAP_TOP_POWER, WRAP_TOP_PD_IBIAS, 0);
 	sg2002_update_bits(cap->wrap, WRAP_PHY4_LANE_ENABLE,
 			    WRAP_PHY4_DESKEW_LANES, 0);
@@ -602,14 +622,6 @@ static void sg2002_vi_enable(struct sg2002_capture *cap, dma_addr_t addr)
 	       FIELD_PREP(VI_CSIBDG_HEIGHT, SG2002_HEIGHT - 1),
 	       cap->vi + VI_CSIBDG_CH0_SIZE);
 
-	WRITE_ONCE(cap->streaming,
-		   SG2002_STAGE_ENABLED(cap, SG2002_STAGE_IRQ));
-	if (SG2002_STAGE_ENABLED(cap, SG2002_STAGE_IRQ)) {
-		writel(VI_ISP_INT_EVENT0_SINGLE_YUV,
-		       cap->vi + VI_ISP_INT_EVENT0_EN);
-		writel(VI_ISP_INT_EVENT2_SINGLE_YUV,
-		       cap->vi + VI_ISP_INT_EVENT2_EN);
-	}
 	if (SG2002_STAGE_ENABLED(cap, SG2002_STAGE_DMA))
 		sg2002_preraw_fe0_trigger(cap);
 	else
@@ -625,6 +637,15 @@ static void sg2002_vi_enable(struct sg2002_capture *cap, dma_addr_t addr)
 	writel(0x00000d01, cap->vi + VI_ISP_SW_CTRL1);
 	writel(0x0d010000, cap->vi + VI_ISP_SW_CTRL0);
 
+	sg2002_csibdg_clear_status(cap);
+	WRITE_ONCE(cap->streaming,
+		   SG2002_STAGE_ENABLED(cap, SG2002_STAGE_IRQ));
+	if (SG2002_STAGE_ENABLED(cap, SG2002_STAGE_IRQ)) {
+		writel(VI_ISP_FRAME_DONE_FE0_CH0,
+		       cap->vi + VI_ISP_INT_EVENT0_EN);
+		if (SG2002_STAGE_ENABLED(cap, SG2002_STAGE_CSI))
+			sg2002_csi_irq_enable(cap, true);
+	}
 	ctrl |= VI_CSIBDG_CSI_ENABLE | VI_CSIBDG_UPDATE;
 	writel(ctrl, cap->vi + VI_CSIBDG_TOP_CTRL);
 }
@@ -640,6 +661,7 @@ static void sg2002_vi_disable(struct sg2002_capture *cap)
 	writel(~0U, cap->vi + VI_ISP_INT_EVENT1);
 	writel(~0U, cap->vi + VI_ISP_INT_EVENT2);
 	writel(0, cap->vi + VI_PRE_RAW_FRAME_VALID);
+	sg2002_csibdg_clear_status(cap);
 	sg2002_restore_scenarios(cap);
 }
 
@@ -719,21 +741,24 @@ static irqreturn_t sg2002_csi_irq(int irq, void *data)
 	struct sg2002_capture *cap = data;
 	u32 status;
 
-	status = readl(cap->mac + MAC_CSI_IRQ_STATUS) & 0xff;
+	status = readl(cap->mac + MAC_CSI_IRQ_STATUS) & MAC_CSI_IRQ_ERRORS;
 	if (!status)
 		return IRQ_NONE;
 
 	if (!READ_ONCE(cap->streaming)) {
-		sg2002_update_bits(cap->mac, MAC_CSI_IRQ_CTRL,
-				    MAC_CSI_IRQ_MASK | MAC_CSI_IRQ_CLEAR,
-				    FIELD_PREP(MAC_CSI_IRQ_MASK, 0xff) |
-				    FIELD_PREP(MAC_CSI_IRQ_CLEAR, status));
+		sg2002_csi_irq_enable(cap, false);
 		return IRQ_HANDLED;
 	}
 
 	sg2002_update_bits(cap->mac, MAC_CSI_IRQ_CTRL, MAC_CSI_IRQ_CLEAR,
 			    FIELD_PREP(MAC_CSI_IRQ_CLEAR, status));
-	dev_warn_ratelimited(cap->dev, "CSI error status %#x\n", status);
+	dev_warn_ratelimited(cap->dev,
+			     "CSI errors %#x%s%s%s%s%s\n", status,
+			     status & MAC_CSI_IRQ_ECC_ERR ? " ECC" : "",
+			     status & MAC_CSI_IRQ_CRC_ERR ? " CRC" : "",
+			     status & MAC_CSI_IRQ_HDR_ERR ? " header" : "",
+			     status & MAC_CSI_IRQ_WC_ERR ? " word-count" : "",
+			     status & MAC_CSI_IRQ_FIFO_FULL ? " FIFO-full" : "");
 	return IRQ_HANDLED;
 }
 
