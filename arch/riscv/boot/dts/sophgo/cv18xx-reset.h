@@ -54,6 +54,8 @@
 #define RST_COMBO_PHY0			58
 #define RST_SPI_NAND			61
 #define RST_SE				62
+#define RST_CSI_PHY0			70
+#define RST_CSI_PHY0_APB			71
 #define RST_UART4			74
 #define RST_GPIO3			75
 #define RST_SYSTEM			76
