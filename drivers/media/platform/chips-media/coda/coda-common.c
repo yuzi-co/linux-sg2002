@@ -444,7 +444,7 @@ const char *coda_product_name(int product)
 		return "CODA7541";
 	case CODA_960:
 		return "CODA960";
-	case CODA_980:
+	case CODA980_PRODUCT_CODE:
 		return "CODA980";
 	default:
 		snprintf(buf, sizeof(buf), "(0x%04x)", product);
@@ -3321,7 +3321,7 @@ static const struct coda_devtype coda_devdata[] = {
 static const struct coda_devtype sg2002_coda980_devdata = {
 	/* The SG2002 firmware implements the Coda9 register command ABI. */
 	.product		= CODA_960,
-	.firmware_product	= CODA_980,
+	.firmware_product	= CODA980_PRODUCT_CODE,
 	.codecs			= coda9_codecs,
 	.num_codecs		= ARRAY_SIZE(coda9_codecs),
 	.vdevs			= sg2002_coda980_video_devices,
