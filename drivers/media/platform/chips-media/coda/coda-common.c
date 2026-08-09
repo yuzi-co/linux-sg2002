@@ -2883,25 +2883,27 @@ static int coda_hw_init(struct coda_dev *dev)
 		writel(dev->devtype->sram_ctrl_value,
 		       dev->sram_ctrl + dev->devtype->sram_ctrl_offset);
 
-	/*
-	 * Copy the first CODA_ISRAM_SIZE in the internal SRAM.
-	 * The 16-bit chars in the code buffer are in memory access
-	 * order, re-sort them to CODA order for register download.
-	 * Data in this SRAM survives a reboot.
-	 */
-	p = (u16 *)dev->codebuf.vaddr;
-	if (dev->devtype->product == CODA_DX6) {
-		for (i = 0; i < (CODA_ISRAM_SIZE / 2); i++)  {
-			data = CODA_DOWN_ADDRESS_SET(i) |
-				CODA_DOWN_DATA_SET(p[i ^ 1]);
-			coda_write(dev, data, CODA_REG_BIT_CODE_DOWN);
-		}
-	} else {
-		for (i = 0; i < (CODA_ISRAM_SIZE / 2); i++) {
-			data = CODA_DOWN_ADDRESS_SET(i) |
-				CODA_DOWN_DATA_SET(p[round_down(i, 4) +
-							3 - (i % 4)]);
-			coda_write(dev, data, CODA_REG_BIT_CODE_DOWN);
+	if (!dev->devtype->skip_code_download) {
+		/*
+		 * Copy the first CODA_ISRAM_SIZE in the internal SRAM.
+		 * The 16-bit chars in the code buffer are in memory access
+		 * order, re-sort them to CODA order for register download.
+		 * Data in this SRAM survives a reboot.
+		 */
+		p = (u16 *)dev->codebuf.vaddr;
+		if (dev->devtype->product == CODA_DX6) {
+			for (i = 0; i < (CODA_ISRAM_SIZE / 2); i++)  {
+				data = CODA_DOWN_ADDRESS_SET(i) |
+					CODA_DOWN_DATA_SET(p[i ^ 1]);
+				coda_write(dev, data, CODA_REG_BIT_CODE_DOWN);
+			}
+		} else {
+			for (i = 0; i < (CODA_ISRAM_SIZE / 2); i++) {
+				data = CODA_DOWN_ADDRESS_SET(i) |
+					CODA_DOWN_DATA_SET(p[round_down(i, 4) +
+								3 - (i % 4)]);
+				coda_write(dev, data, CODA_REG_BIT_CODE_DOWN);
+			}
 		}
 	}
 
@@ -2919,6 +2921,10 @@ static int coda_hw_init(struct coda_dev *dev)
 	    dev->devtype->product == CODA_HX4) {
 		coda_write(dev, tempbuf,
 				CODA_REG_BIT_TEMP_BUF_ADDR);
+		if (dev->devtype->commonbuf_size)
+			coda_write(dev, dev->codebuf.paddr +
+				   dev->devtype->parabuf_offset,
+				   CODA_REG_BIT_PARA_BUF_ADDR);
 		coda_write(dev, 0, CODA_REG_BIT_BIT_STREAM_PARAM);
 	} else {
 		coda_write(dev, dev->workbuf.paddr,
@@ -3340,6 +3346,7 @@ static const struct coda_devtype sg2002_coda980_devdata = {
 	.requires_firmware_name	= true,
 	.nv21_to_nv12		= true,
 	.has_software_reset	= true,
+	.skip_code_download	= true,
 };
 
 static const struct of_device_id coda_dt_ids[] = {
