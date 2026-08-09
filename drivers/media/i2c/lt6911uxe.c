@@ -8,6 +8,7 @@
 #include <linux/mod_devicetable.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 #include <linux/v4l2-dv-timings.h>
@@ -108,13 +109,19 @@ struct lt6911uxe {
 	struct v4l2_ctrl *pixel_rate;
 	struct v4l2_dv_timings timings;
 	struct lt6911uxe_mode cur_mode;
+	/* Serializes UXC mode discovery and active format updates. */
+	struct mutex mode_lock;
 	struct regmap *regmap;
 	struct gpio_desc *reset_gpio;
 	struct gpio_desc *irq_gpio;
 	bool is_uxc;
 };
 
-static int lt6911uxe_status_update(struct lt6911uxe *lt6911uxe);
+static int lt6911uxe_status_update(struct lt6911uxe *lt6911uxe,
+				   bool *mode_changed);
+static int lt6911uxe_set_format(struct v4l2_subdev *sd,
+				struct v4l2_subdev_state *sd_state,
+				struct v4l2_subdev_format *fmt);
 
 static const struct v4l2_event lt6911uxe_ev_source_change = {
 	.type = V4L2_EVENT_SOURCE_CHANGE,
@@ -136,6 +143,20 @@ static s64 get_pixel_rate(struct lt6911uxe *lt6911uxe)
 	do_div(pixel_rate, lt6911uxe->cur_mode.lanes);
 
 	return pixel_rate;
+}
+
+static bool lt6911uxe_mode_equal(const struct lt6911uxe_mode *a,
+				 const struct lt6911uxe_mode *b)
+{
+	return a->width == b->width &&
+	       a->height == b->height &&
+	       a->htotal == b->htotal &&
+	       a->vtotal == b->vtotal &&
+	       a->code == b->code &&
+	       a->fps == b->fps &&
+	       a->lanes == b->lanes &&
+	       a->link_freq == b->link_freq &&
+	       a->pixel_clk == b->pixel_clk;
 }
 
 static int lt6911uxe_get_detected_timings(struct v4l2_subdev *sd,
@@ -197,28 +218,42 @@ static int lt6911uxe_g_dv_timings(struct v4l2_subdev *sd, unsigned int pad,
 static int lt6911uxe_query_dv_timings(struct v4l2_subdev *sd, unsigned int pad,
 				      struct v4l2_dv_timings *timings)
 {
+	struct lt6911uxe *lt6911uxe = to_lt6911uxe(sd);
 	struct v4l2_subdev_state *state;
+	struct v4l2_subdev_format fmt = {
+		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+		.pad = pad,
+	};
+	bool mode_changed = false;
 	int ret;
 
-	ret = lt6911uxe_status_update(to_lt6911uxe(sd));
+	/* UXC has no HPD IRQ; UXE refreshes cur_mode from its IRQ handler. */
+	if (!lt6911uxe->is_uxc)
+		return -ENOIOCTLCMD;
+
+	mutex_lock(&lt6911uxe->mode_lock);
+	ret = lt6911uxe_status_update(lt6911uxe, &mode_changed);
 	if (ret && ret != -ENOLINK)
-		return ret;
+		goto unlock_mode;
 
 	state = v4l2_subdev_lock_and_get_active_state(sd);
 	ret = lt6911uxe_get_detected_timings(sd, timings);
-	if (ret) {
-		v4l2_subdev_unlock_state(state);
-		return ret;
-	}
-
-	if (!v4l2_valid_dv_timings(timings, &lt6911uxe_timings_cap_4kp30,
-				   NULL, NULL)) {
-		v4l2_subdev_unlock_state(state);
-		return -ERANGE;
-	}
+	if (!ret && !v4l2_valid_dv_timings(timings,
+					   &lt6911uxe_timings_cap_4kp30,
+					     NULL, NULL))
+		ret = -ERANGE;
+	if (!ret)
+		/* Keep the active source pad and its pixel-rate control in sync. */
+		ret = lt6911uxe_set_format(sd, state, &fmt);
 
 	v4l2_subdev_unlock_state(state);
-	return 0;
+
+unlock_mode:
+	mutex_unlock(&lt6911uxe->mode_lock);
+	if (mode_changed)
+		v4l2_subdev_notify_event(sd, &lt6911uxe_ev_source_change);
+
+	return ret;
 }
 
 static int lt6911uxe_enum_dv_timings(struct v4l2_subdev *sd,
@@ -235,7 +270,8 @@ static int lt6911uxe_dv_timings_cap(struct v4l2_subdev *sd,
 	return 0;
 }
 
-static int lt6911uxe_status_update(struct lt6911uxe *lt6911uxe)
+static int lt6911uxe_status_update(struct lt6911uxe *lt6911uxe,
+				   bool *mode_changed)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(&lt6911uxe->sd);
 	u64 int_event;
@@ -244,9 +280,13 @@ static int lt6911uxe_status_update(struct lt6911uxe *lt6911uxe)
 	int ret = 0;
 
 	if (lt6911uxe->is_uxc) {
+		struct lt6911uxe_mode mode = lt6911uxe->cur_mode;
 		u64 status, width;
 		u64 pixel_clk;
 		int disable_ret = 0;
+
+		if (mode_changed)
+			*mode_changed = false;
 
 		cci_write(lt6911uxe->regmap, REG_LT6911_ENABLE_I2C, 0x1, &ret);
 		cci_read(lt6911uxe->regmap, REG_LT6911UXC_HDMI_STATUS,
@@ -271,31 +311,35 @@ static int lt6911uxe_status_update(struct lt6911uxe *lt6911uxe)
 				goto uxc_disable;
 			}
 
-			lt6911uxe->cur_mode.width = width;
-			lt6911uxe->cur_mode.height = height;
-			lt6911uxe->cur_mode.fps = LT6911_DEFAULT_FPS;
-			lt6911uxe->cur_mode.htotal = width + 160;
-			lt6911uxe->cur_mode.vtotal = height + 45;
+			mode.width = width;
+			mode.height = height;
+			mode.fps = LT6911_DEFAULT_FPS;
+			mode.htotal = width + 160;
+			mode.vtotal = height + 45;
 
-			pixel_clk = (u64)lt6911uxe->cur_mode.htotal *
-				    lt6911uxe->cur_mode.vtotal *
+			pixel_clk = (u64)mode.htotal * mode.vtotal *
 				    LT6911_DEFAULT_FPS;
-			lt6911uxe->cur_mode.pixel_clk = pixel_clk;
-			lt6911uxe->cur_mode.link_freq = div_u64(pixel_clk * 16,
-							 lt6911uxe->cur_mode.lanes);
+			mode.pixel_clk = pixel_clk;
+			mode.link_freq = div_u64(pixel_clk * 16, mode.lanes);
 			break;
 
 		case LT6911UXC_HDMI_UNSTABLE:
-			lt6911uxe->cur_mode.height = 0;
-			lt6911uxe->cur_mode.width = 0;
-			lt6911uxe->cur_mode.fps = 0;
-			lt6911uxe->cur_mode.link_freq = 0;
-			ret = -ENOLINK;
-			break;
-
 		default:
+			mode.height = 0;
+			mode.width = 0;
+			mode.htotal = 0;
+			mode.vtotal = 0;
+			mode.fps = 0;
+			mode.link_freq = 0;
+			mode.pixel_clk = 0;
 			ret = -ENOLINK;
 			break;
+		}
+
+		if (!lt6911uxe_mode_equal(&lt6911uxe->cur_mode, &mode)) {
+			lt6911uxe->cur_mode = mode;
+			if (mode_changed)
+				*mode_changed = true;
 		}
 
 uxc_disable:
@@ -303,8 +347,6 @@ uxc_disable:
 			  &disable_ret);
 		if (!ret && disable_ret)
 			ret = disable_ret;
-		v4l2_subdev_notify_event(&lt6911uxe->sd,
-					  &lt6911uxe_ev_source_change);
 		return ret;
 	}
 
@@ -672,7 +714,7 @@ static irqreturn_t lt6911uxe_threaded_irq_fn(int irq, void *dev_id)
 		.which = V4L2_SUBDEV_FORMAT_ACTIVE
 	};
 
-	lt6911uxe_status_update(lt6911uxe);
+	lt6911uxe_status_update(lt6911uxe, NULL);
 	state = v4l2_subdev_lock_and_get_active_state(sd);
 	/*
 	 * As a HDMI to CSI2 bridge, it needs to update the format in time
@@ -689,7 +731,7 @@ static void lt6911uxe_remove(struct i2c_client *client)
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct lt6911uxe *lt6911uxe = to_lt6911uxe(sd);
 
-	if (lt6911uxe->irq_gpio)
+	if (lt6911uxe->irq_gpio && !lt6911uxe->is_uxc)
 		free_irq(gpiod_to_irq(lt6911uxe->irq_gpio), lt6911uxe);
 	v4l2_async_unregister_subdev(sd);
 	v4l2_subdev_cleanup(sd);
@@ -708,6 +750,7 @@ static int lt6911uxe_probe(struct i2c_client *client)
 	lt6911uxe = devm_kzalloc(dev, sizeof(*lt6911uxe), GFP_KERNEL);
 	if (!lt6911uxe)
 		return -ENOMEM;
+	mutex_init(&lt6911uxe->mode_lock);
 
 	lt6911uxe->regmap = devm_regmap_init_i2c(client,
 						 &lt6911uxe_regmap_config);
@@ -767,8 +810,8 @@ static int lt6911uxe_probe(struct i2c_client *client)
 		goto media_entity_cleanup;
 	}
 
-	/* Setting irq */
-	if (lt6911uxe->irq_gpio) {
+	/* UXC has no HPD IRQ and refreshes its mode from query_dv_timings(). */
+	if (lt6911uxe->irq_gpio && !lt6911uxe->is_uxc) {
 		ret = request_threaded_irq(gpiod_to_irq(lt6911uxe->irq_gpio), NULL,
 					   lt6911uxe_threaded_irq_fn,
 					   IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING |
@@ -788,7 +831,7 @@ static int lt6911uxe_probe(struct i2c_client *client)
 	return 0;
 
 free_irq:
-	if (lt6911uxe->irq_gpio)
+	if (lt6911uxe->irq_gpio && !lt6911uxe->is_uxc)
 		free_irq(gpiod_to_irq(lt6911uxe->irq_gpio), lt6911uxe);
 
 subdev_cleanup:
