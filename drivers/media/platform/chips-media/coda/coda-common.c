@@ -3365,6 +3365,7 @@ static const struct coda_devtype sg2002_coda980_devdata = {
 	.nv21_to_nv12		= true,
 	.rstc_assert_deassert	= true,
 	.has_software_reset	= true,
+	.has_extended_h264_header = true,
 };
 
 static const struct of_device_id coda_dt_ids[] = {
