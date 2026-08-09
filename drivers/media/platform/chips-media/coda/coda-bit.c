@@ -637,6 +637,7 @@ err:
 static int coda_encode_header(struct coda_ctx *ctx, struct vb2_v4l2_buffer *buf,
 			      int header_code, u8 *header, int *size)
 {
+	int header_type = header_code;
 	struct vb2_buffer *vb = &buf->vb2_buf;
 	struct coda_dev *dev = ctx->dev;
 	struct coda_q_data *q_data_src;
@@ -673,7 +674,12 @@ static int coda_encode_header(struct coda_ctx *ctx, struct vb2_v4l2_buffer *buf,
 	}
 	if (dev->devtype->has_coda980_h264_abi &&
 	    ctx->codec->dst_fourcc == V4L2_PIX_FMT_H264) {
-		if (header_code == CODA_HEADER_H264_SPS) {
+		/*
+		 * header_code can carry Coda9 command flags, such as the
+		 * non-aligned-frame crop flag above.  Keep the header type
+		 * separate so those flags cannot suppress the Coda980 ABI setup.
+		 */
+		if (header_type == CODA_HEADER_H264_SPS) {
 			u32 profile;
 
 			switch (ctx->params.h264_profile_idc) {
@@ -695,7 +701,7 @@ static int coda_encode_header(struct coda_ctx *ctx, struct vb2_v4l2_buffer *buf,
 				   CODA9_CMD_ENC_HEADER_CHROMA_FORMAT);
 			coda_write(dev, 0,
 				   CODA9_CMD_ENC_HEADER_FIELD_FLAG);
-		} else if (header_code == CODA_HEADER_H264_PPS) {
+		} else if (header_type == CODA_HEADER_H264_PPS) {
 			coda_write(dev, 0,
 				   CODA9_CMD_ENC_HEADER_CABAC_MODE);
 			coda_write(dev, 0,
