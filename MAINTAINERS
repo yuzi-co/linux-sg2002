@@ -25288,6 +25288,8 @@ L:	sophgo@lists.linux.dev
 W:	https://github.com/sophgo/linux/wiki
 T:	git https://github.com/sophgo/linux.git
 S:	Maintained
+F:	Documentation/devicetree/bindings/media/sophgo,sg2002-csi-capture.yaml
+F:	drivers/media/platform/sophgo/
 N:	sophgo
 K:	sophgo
 
