@@ -340,6 +340,7 @@ static const struct coda_video_device sg2002_coda980_encoder = {
 	.type = CODA_INST_ENCODER,
 	.ops = &coda_bit_encode_ops,
 	.src_formats = {
+		V4L2_PIX_FMT_NV12,
 		V4L2_PIX_FMT_NV21,
 	},
 	.dst_formats = {
@@ -2635,10 +2636,7 @@ int coda_encoder_queue_init(void *priv, struct vb2_queue *src_vq,
 	int ret;
 
 	src_vq->type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
-	if (ctx->dev->devtype->nv21_to_nv12)
-		src_vq->io_modes = VB2_MMAP;
-	else
-		src_vq->io_modes = VB2_DMABUF | VB2_MMAP;
+	src_vq->io_modes = VB2_DMABUF | VB2_MMAP;
 	src_vq->mem_ops = &vb2_dma_contig_memops;
 
 	ret = coda_queue_init(priv, src_vq);
@@ -2646,7 +2644,11 @@ int coda_encoder_queue_init(void *priv, struct vb2_queue *src_vq,
 		return ret;
 
 	dst_vq->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-	dst_vq->io_modes = VB2_DMABUF | VB2_MMAP;
+	/* H.264 header generation writes the capture buffer on the CPU. */
+	if (ctx->dev->devtype->nv21_to_nv12)
+		dst_vq->io_modes = VB2_MMAP;
+	else
+		dst_vq->io_modes = VB2_DMABUF | VB2_MMAP;
 	dst_vq->mem_ops = &vb2_dma_contig_memops;
 
 	return coda_queue_init(priv, dst_vq);
@@ -3645,3 +3647,4 @@ module_platform_driver(coda_driver);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Javier Martin <javier.martin@vista-silicon.com>");
 MODULE_DESCRIPTION("Coda multi-standard codec V4L2 driver");
+MODULE_IMPORT_NS("DMA_BUF");
