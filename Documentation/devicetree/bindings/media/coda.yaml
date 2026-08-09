@@ -10,8 +10,9 @@ maintainers:
   - Philipp Zabel <p.zabel@pengutronix.de>
 
 description: |-
-  Coda codec IPs are present in i.MX SoCs in various versions,
-  called VPU (Video Processing Unit).
+  Coda codec IPs are present in i.MX SoCs in various versions, called VPU
+  (Video Processing Unit). The Sophgo SG2002 integrates a Coda980 H.264 core
+  with a separate video-codec control window.
 
 properties:
   compatible:
@@ -30,31 +31,25 @@ properties:
               - fsl,imx6dl-vpu
               - fsl,imx6q-vpu
           - const: cnm,coda960
+      - const: sophgo,sg2002-coda980
 
   reg:
-    maxItems: 1
+    true
+
+  reg-names:
+    true
 
   clocks:
-    items:
-      - description: PER clock
-      - description: AHB interface clock
+    true
 
   clock-names:
-    items:
-      - const: per
-      - const: ahb
+    true
 
   interrupts:
-    minItems: 1
-    items:
-      - description: BIT processor interrupt
-      - description: JPEG unit interrupt
+    true
 
   interrupt-names:
-    minItems: 1
-    items:
-      - const: bit
-      - const: jpeg
+    true
 
   power-domains:
     maxItems: 1
@@ -66,6 +61,10 @@ properties:
     $ref: /schemas/types.yaml#/definitions/phandle
     description: phandle pointing to the SRAM device node
 
+  firmware-name:
+    $ref: /schemas/types.yaml#/definitions/string
+    description: Firmware image loaded into the Coda processor.
+
 required:
   - compatible
   - reg
@@ -76,7 +75,7 @@ required:
 additionalProperties: false
 
 allOf:
-  - if:
+  - if: # i.MX Coda960 has a separate JPEG interrupt
       properties:
         compatible:
           contains:
@@ -95,6 +94,63 @@ allOf:
 
         power-domains: false
 
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: sophgo,sg2002-coda980
+    then:
+      properties:
+        reg:
+          minItems: 2
+          maxItems: 2
+        reg-names:
+          items:
+            - const: vc-ctrl
+            - const: h264
+        clocks:
+          minItems: 5
+          maxItems: 5
+        clock-names:
+          items:
+            - const: axi-video-codec
+            - const: cfg-reg-vc
+            - const: vc-src0
+            - const: h264c
+            - const: apb-h264c
+        interrupts:
+          maxItems: 1
+        interrupt-names:
+          items:
+            - const: h264
+      required:
+        - reg-names
+        - firmware-name
+    else:
+      properties:
+        reg:
+          maxItems: 1
+        reg-names: false
+        firmware-name: false
+        clocks:
+          items:
+            - description: PER clock
+            - description: AHB interface clock
+        clock-names:
+          items:
+            - const: per
+            - const: ahb
+        interrupts:
+          minItems: 1
+          items:
+            - description: BIT processor interrupt
+            - description: JPEG unit interrupt
+        interrupt-names:
+          minItems: 1
+          items:
+            - const: bit
+            - const: jpeg
+
 examples:
   - |
     vpu: video-codec@63ff4000 {
@@ -104,4 +160,24 @@ examples:
         clocks = <&clks 63>, <&clks 63>;
         clock-names = "per", "ahb";
         iram = <&ocram>;
+    };
+
+  - |
+    #include <dt-bindings/clock/sophgo,cv1800.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    vcodec: video-codec@b030000 {
+        compatible = "sophgo,sg2002-coda980";
+        reg = <0x0b030000 0x100>, <0x0b010000 0x10000>;
+        reg-names = "vc-ctrl", "h264";
+        interrupts = <21 IRQ_TYPE_LEVEL_HIGH>;
+        interrupt-names = "h264";
+        clocks = <&clk CLK_AXI_VIDEO_CODEC>,
+                 <&clk CLK_CFG_REG_VC>,
+                 <&clk CLK_VC_SRC0>,
+                 <&clk CLK_H264C>,
+                 <&clk CLK_APB_H264C>;
+        clock-names = "axi-video-codec", "cfg-reg-vc", "vc-src0",
+                      "h264c", "apb-h264c";
+        firmware-name = "sophgo/sg2002/coda980.bin";
     };
