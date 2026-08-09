@@ -12,6 +12,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 #include <linux/v4l2-dv-timings.h>
+#include <linux/workqueue.h>
 
 #include <media/v4l2-cci.h>
 #include <media/v4l2-ctrls.h>
@@ -49,6 +50,7 @@
 #define REG_LT6911UXC_H_ACTIVE		CCI_REG16(0x85ea)
 #define REG_LT6911UXC_V_ACTIVE		CCI_REG16(0x85f0)
 #define LT6911_DEFAULT_FPS		60
+#define LT6911UXC_POLL_INTERVAL_MS	1000
 
 #define LT6911UXE_DEFAULT_LANES		4
 #define LT6911_PAGE_CONTROL		0xff
@@ -111,10 +113,15 @@ struct lt6911uxe {
 	struct lt6911uxe_mode cur_mode;
 	/* Serializes UXC mode discovery and active format updates. */
 	struct mutex mode_lock;
+	/* Serializes UXC polling lifetime against stream enable and removal. */
+	struct mutex stream_lock;
+	struct delayed_work uxc_poll_work;
 	struct regmap *regmap;
 	struct gpio_desc *reset_gpio;
 	struct gpio_desc *irq_gpio;
 	bool is_uxc;
+	bool uxc_streaming;
+	bool removing;
 };
 
 static int lt6911uxe_status_update(struct lt6911uxe *lt6911uxe,
@@ -215,15 +222,53 @@ static int lt6911uxe_g_dv_timings(struct v4l2_subdev *sd, unsigned int pad,
 	return 0;
 }
 
-static int lt6911uxe_query_dv_timings(struct v4l2_subdev *sd, unsigned int pad,
-				      struct v4l2_dv_timings *timings)
+static int lt6911uxe_refresh_uxc_state(struct lt6911uxe *lt6911uxe,
+				       unsigned int pad,
+				       struct v4l2_dv_timings *timings,
+				       bool *mode_changed)
 {
-	struct lt6911uxe *lt6911uxe = to_lt6911uxe(sd);
+	struct v4l2_subdev *sd = &lt6911uxe->sd;
 	struct v4l2_subdev_state *state;
 	struct v4l2_subdev_format fmt = {
 		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
 		.pad = pad,
 	};
+	int ret;
+
+	lockdep_assert_held(&lt6911uxe->mode_lock);
+
+	ret = lt6911uxe_status_update(lt6911uxe, mode_changed);
+	if (ret && ret != -ENOLINK)
+		return ret;
+
+	state = v4l2_subdev_lock_and_get_active_state(sd);
+	if (!ret && timings) {
+		ret = lt6911uxe_get_detected_timings(sd, timings);
+		if (!ret && !v4l2_valid_dv_timings(timings,
+						   &lt6911uxe_timings_cap_4kp30,
+						   NULL, NULL))
+			ret = -ERANGE;
+	}
+	if ((!ret || ret == -ENOLINK) &&
+	    (timings || (mode_changed && *mode_changed))) {
+		int fmt_ret;
+
+		/* Keep the active source pad and its pixel-rate control in sync. */
+		fmt_ret = lt6911uxe_set_format(sd, state, &fmt);
+		if (!ret)
+			ret = fmt_ret;
+	}
+
+	v4l2_subdev_unlock_state(state);
+
+	return ret;
+}
+
+static int lt6911uxe_query_dv_timings(struct v4l2_subdev *sd, unsigned int pad,
+				      struct v4l2_dv_timings *timings)
+{
+	struct lt6911uxe *lt6911uxe = to_lt6911uxe(sd);
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	bool mode_changed = false;
 	int ret;
 
@@ -231,25 +276,15 @@ static int lt6911uxe_query_dv_timings(struct v4l2_subdev *sd, unsigned int pad,
 	if (!lt6911uxe->is_uxc)
 		return -ENOIOCTLCMD;
 
+	ret = pm_runtime_resume_and_get(&client->dev);
+	if (ret < 0)
+		return ret;
+
 	mutex_lock(&lt6911uxe->mode_lock);
-	ret = lt6911uxe_status_update(lt6911uxe, &mode_changed);
-	if (ret && ret != -ENOLINK)
-		goto unlock_mode;
-
-	state = v4l2_subdev_lock_and_get_active_state(sd);
-	ret = lt6911uxe_get_detected_timings(sd, timings);
-	if (!ret && !v4l2_valid_dv_timings(timings,
-					   &lt6911uxe_timings_cap_4kp30,
-					     NULL, NULL))
-		ret = -ERANGE;
-	if (!ret)
-		/* Keep the active source pad and its pixel-rate control in sync. */
-		ret = lt6911uxe_set_format(sd, state, &fmt);
-
-	v4l2_subdev_unlock_state(state);
-
-unlock_mode:
+	ret = lt6911uxe_refresh_uxc_state(lt6911uxe, pad, timings,
+					  &mode_changed);
 	mutex_unlock(&lt6911uxe->mode_lock);
+	pm_runtime_put(&client->dev);
 	if (mode_changed)
 		v4l2_subdev_notify_event(sd, &lt6911uxe_ev_source_change);
 
@@ -469,6 +504,55 @@ static void lt6911uxe_update_pad_format(const struct lt6911uxe_mode *mode,
 	fmt->field = V4L2_FIELD_NONE;
 }
 
+static void lt6911uxe_uxc_poll_work(struct work_struct *work)
+{
+	struct lt6911uxe *lt6911uxe =
+		container_of(to_delayed_work(work), struct lt6911uxe,
+			     uxc_poll_work);
+	bool mode_changed = false;
+	bool streaming;
+
+	mutex_lock(&lt6911uxe->mode_lock);
+	mutex_lock(&lt6911uxe->stream_lock);
+	streaming = lt6911uxe->uxc_streaming;
+	mutex_unlock(&lt6911uxe->stream_lock);
+	if (streaming) {
+		/*
+		 * Stream-off holds the active state lock while canceling this work.
+		 * Only refresh cur_mode here; userspace queries timings in response
+		 * to the source-change event to synchronize active state and controls.
+		 */
+		lt6911uxe_status_update(lt6911uxe, &mode_changed);
+		mutex_lock(&lt6911uxe->stream_lock);
+		if (lt6911uxe->uxc_streaming)
+			schedule_delayed_work(&lt6911uxe->uxc_poll_work,
+					      msecs_to_jiffies(LT6911UXC_POLL_INTERVAL_MS));
+		mutex_unlock(&lt6911uxe->stream_lock);
+	}
+	mutex_unlock(&lt6911uxe->mode_lock);
+
+	if (mode_changed)
+		v4l2_subdev_notify_event(&lt6911uxe->sd,
+					 &lt6911uxe_ev_source_change);
+}
+
+/* stream_lock prevents a worker from rearming after streaming is cleared. */
+static bool lt6911uxe_stop_uxc_polling(struct lt6911uxe *lt6911uxe,
+				       bool removing)
+{
+	bool was_streaming;
+
+	mutex_lock(&lt6911uxe->stream_lock);
+	if (removing)
+		lt6911uxe->removing = true;
+	was_streaming = lt6911uxe->uxc_streaming;
+	lt6911uxe->uxc_streaming = false;
+	mutex_unlock(&lt6911uxe->stream_lock);
+	cancel_delayed_work_sync(&lt6911uxe->uxc_poll_work);
+
+	return was_streaming;
+}
+
 static int lt6911uxe_enable_streams(struct v4l2_subdev *sd,
 				    struct v4l2_subdev_state *state,
 				    u32 pad, u64 streams_mask)
@@ -478,8 +562,23 @@ static int lt6911uxe_enable_streams(struct v4l2_subdev *sd,
 	int ret;
 
 	/* The UXC firmware owns its always-on CSI transmitter configuration. */
-	if (lt6911uxe->is_uxc)
+	if (lt6911uxe->is_uxc) {
+		ret = pm_runtime_resume_and_get(&client->dev);
+		if (ret < 0)
+			return ret;
+
+		mutex_lock(&lt6911uxe->stream_lock);
+		if (lt6911uxe->removing) {
+			mutex_unlock(&lt6911uxe->stream_lock);
+			pm_runtime_put(&client->dev);
+			return -ENODEV;
+		}
+		lt6911uxe->uxc_streaming = true;
+		schedule_delayed_work(&lt6911uxe->uxc_poll_work,
+				      msecs_to_jiffies(LT6911UXC_POLL_INTERVAL_MS));
+		mutex_unlock(&lt6911uxe->stream_lock);
 		return 0;
+	}
 
 	ret = pm_runtime_resume_and_get(&client->dev);
 	if (ret < 0)
@@ -506,8 +605,11 @@ static int lt6911uxe_disable_streams(struct v4l2_subdev *sd,
 	struct i2c_client *client = v4l2_get_subdevdata(&lt6911uxe->sd);
 	int ret;
 
-	if (lt6911uxe->is_uxc)
+	if (lt6911uxe->is_uxc) {
+		if (lt6911uxe_stop_uxc_polling(lt6911uxe, false))
+			pm_runtime_put(&client->dev);
 		return 0;
+	}
 
 	ret = cci_write(lt6911uxe->regmap, REG_MIPI_TX_CTRL, 0x0, NULL);
 	if (ret)
@@ -530,10 +632,8 @@ static int lt6911uxe_set_format(struct v4l2_subdev *sd,
 		return 0;
 
 	pixel_rate = get_pixel_rate(lt6911uxe);
-	__v4l2_ctrl_modify_range(lt6911uxe->pixel_rate, pixel_rate,
-				 pixel_rate, 1, pixel_rate);
-
-	return 0;
+	return v4l2_ctrl_modify_range(lt6911uxe->pixel_rate, pixel_rate,
+				      pixel_rate, 1, pixel_rate);
 }
 
 static int lt6911uxe_enum_mbus_code(struct v4l2_subdev *sd,
@@ -730,6 +830,11 @@ static void lt6911uxe_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct lt6911uxe *lt6911uxe = to_lt6911uxe(sd);
+	bool was_streaming;
+
+	was_streaming = lt6911uxe_stop_uxc_polling(lt6911uxe, true);
+	if (was_streaming)
+		pm_runtime_put(&client->dev);
 
 	if (lt6911uxe->irq_gpio && !lt6911uxe->is_uxc)
 		free_irq(gpiod_to_irq(lt6911uxe->irq_gpio), lt6911uxe);
@@ -751,6 +856,8 @@ static int lt6911uxe_probe(struct i2c_client *client)
 	if (!lt6911uxe)
 		return -ENOMEM;
 	mutex_init(&lt6911uxe->mode_lock);
+	mutex_init(&lt6911uxe->stream_lock);
+	INIT_DELAYED_WORK(&lt6911uxe->uxc_poll_work, lt6911uxe_uxc_poll_work);
 
 	lt6911uxe->regmap = devm_regmap_init_i2c(client,
 						 &lt6911uxe_regmap_config);
