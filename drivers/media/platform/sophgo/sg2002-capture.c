@@ -22,6 +22,7 @@
 #include <linux/reset.h>
 #include <linux/spinlock.h>
 #include <linux/videodev2.h>
+#include <linux/workqueue.h>
 
 #include <media/v4l2-async.h>
 #include <media/v4l2-device.h>
@@ -31,6 +32,7 @@
 #include <media/v4l2-mc.h>
 #include <media/v4l2-subdev.h>
 #include <media/videobuf2-dma-contig.h>
+#include <media/videobuf2-v4l2.h>
 
 #define SG2002_DRV_NAME		"sg2002-capture"
 
@@ -58,6 +60,8 @@
 #define MAC_CSI_IRQ_WC_ERR	BIT(3)
 #define MAC_CSI_IRQ_FIFO_FULL	BIT(4)
 #define MAC_CSI_IRQ_ERRORS	GENMASK(4, 0)
+#define MAC_CSI_IRQ_FATAL	(MAC_CSI_IRQ_CRC_ERR | \
+				 MAC_CSI_IRQ_WC_ERR | MAC_CSI_IRQ_FIFO_FULL)
 #define MAC_CSI_IRQ_RESERVED	GENMASK(7, 5)
 #define MAC_CSI_VC_MAP		(MAC_CSI_BASE + 0x18)
 #define MAC_CSI_IRQ_STATUS	(MAC_CSI_BASE + 0x60)
@@ -217,6 +221,12 @@ struct sg2002_capture {
 	struct sg2002_buffer *active;
 	unsigned int sequence;
 	bool streaming;
+	bool source_streaming;
+	bool pipeline_started;
+	bool clocks_enabled;
+	bool error_pending;
+	bool removing;
+	struct work_struct error_work;
 
 	void *scratch;
 	dma_addr_t scratch_dma;
@@ -525,6 +535,7 @@ static void sg2002_preraw_fe0_trigger(struct sg2002_capture *cap)
 static void sg2002_vi_enable(struct sg2002_capture *cap, dma_addr_t addr)
 {
 	u32 ctrl;
+	unsigned long flags;
 
 	/* All three event banks feed the same level IRQ.  A stale status in
 	 * an unacknowledged bank otherwise leaves the CPU in an IRQ storm. */
@@ -563,20 +574,30 @@ static void sg2002_vi_enable(struct sg2002_capture *cap, dma_addr_t addr)
 	writel(0x0d010000, cap->vi + VI_ISP_SW_CTRL0);
 
 	sg2002_csibdg_clear_status(cap);
+	spin_lock_irqsave(&cap->qlock, flags);
 	WRITE_ONCE(cap->streaming, true);
+	cap->error_pending = false;
+	spin_unlock_irqrestore(&cap->qlock, flags);
 	writel(VI_ISP_FRAME_DONE_FE0_CH0, cap->vi + VI_ISP_INT_EVENT0_EN);
 	sg2002_csi_irq_enable(cap, true);
 	ctrl |= VI_CSIBDG_CSI_ENABLE | VI_CSIBDG_UPDATE;
 	writel(ctrl, cap->vi + VI_CSIBDG_TOP_CTRL);
 }
 
-static void sg2002_vi_disable(struct sg2002_capture *cap)
+/* Safe in hard IRQ context: stop bridge DMA and all VI completion IRQs. */
+static void sg2002_vi_quiesce(struct sg2002_capture *cap)
 {
 	sg2002_update_bits(cap->vi, VI_CSIBDG_TOP_CTRL,
-			    VI_CSIBDG_CSI_ENABLE | VI_CSIBDG_UPDATE, 0);
+			    VI_CSIBDG_CSI_ENABLE | VI_CSIBDG_CH0_DMA |
+			    VI_CSIBDG_UPDATE, 0);
 	writel(0, cap->vi + VI_ISP_INT_EVENT0_EN);
 	writel(0, cap->vi + VI_ISP_INT_EVENT1_EN);
 	writel(0, cap->vi + VI_ISP_INT_EVENT2_EN);
+}
+
+static void sg2002_vi_disable(struct sg2002_capture *cap)
+{
+	sg2002_vi_quiesce(cap);
 	writel(~0U, cap->vi + VI_ISP_INT_EVENT0);
 	writel(~0U, cap->vi + VI_ISP_INT_EVENT1);
 	writel(~0U, cap->vi + VI_ISP_INT_EVENT2);
@@ -616,6 +637,85 @@ static void sg2002_return_buffers(struct sg2002_capture *cap,
 	}
 }
 
+/* The caller holds cap->lock, which also protects cap->source. */
+static void sg2002_stop_capture(struct sg2002_capture *cap,
+				enum vb2_buffer_state state)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&cap->qlock, flags);
+	WRITE_ONCE(cap->streaming, false);
+	cap->error_pending = false;
+	spin_unlock_irqrestore(&cap->qlock, flags);
+
+	if (cap->clocks_enabled) {
+		sg2002_vi_disable(cap);
+		sg2002_csi_enable(cap, false);
+		synchronize_irq(cap->vi_irq);
+		synchronize_irq(cap->csi_irq);
+
+		if (cap->source_streaming) {
+			v4l2_subdev_disable_streams(cap->source, cap->source_pad,
+						    BIT(0));
+			cap->source_streaming = false;
+		}
+	}
+
+	sg2002_return_buffers(cap, state);
+	if (cap->scratch)
+		dma_free_coherent(cap->dev, SG2002_SIZE_IMAGE, cap->scratch,
+				  cap->scratch_dma);
+	cap->scratch = NULL;
+	if (cap->clocks_enabled) {
+		sg2002_ddr_restore_clock_gating(cap);
+		clk_bulk_disable_unprepare(cap->num_clks, cap->clks);
+		cap->clocks_enabled = false;
+	}
+	if (cap->pipeline_started) {
+		video_device_pipeline_stop(&cap->vdev);
+		cap->pipeline_started = false;
+	}
+}
+
+static void sg2002_error_work(struct work_struct *work)
+{
+	struct sg2002_capture *cap =
+		container_of(work, struct sg2002_capture, error_work);
+	unsigned long flags;
+	bool pending;
+
+	mutex_lock(&cap->lock);
+	spin_lock_irqsave(&cap->qlock, flags);
+	pending = cap->error_pending;
+	spin_unlock_irqrestore(&cap->qlock, flags);
+	if (pending)
+		sg2002_stop_capture(cap, VB2_BUF_STATE_ERROR);
+	mutex_unlock(&cap->lock);
+}
+
+/* Safe in hard IRQ context: defer the sleeping stream teardown. */
+static void sg2002_capture_error(struct sg2002_capture *cap)
+{
+	unsigned long flags;
+	bool streaming;
+
+	spin_lock_irqsave(&cap->qlock, flags);
+	streaming = cap->streaming;
+	if (streaming) {
+		WRITE_ONCE(cap->streaming, false);
+		cap->error_pending = true;
+		/* Wake userspace before the stream's buffers are returned. */
+		vb2_queue_error(&cap->queue);
+	}
+	spin_unlock_irqrestore(&cap->qlock, flags);
+	if (!streaming)
+		return;
+
+	sg2002_csi_irq_enable(cap, false);
+	sg2002_vi_quiesce(cap);
+	schedule_work(&cap->error_work);
+}
+
 static irqreturn_t sg2002_irq(int irq, void *data)
 {
 	struct sg2002_capture *cap = data;
@@ -637,6 +737,11 @@ static irqreturn_t sg2002_irq(int irq, void *data)
 		return IRQ_HANDLED;
 
 	spin_lock_irqsave(&cap->qlock, flags);
+	/* An error may have stopped the stream while this IRQ waited on qlock. */
+	if (!READ_ONCE(cap->streaming)) {
+		spin_unlock_irqrestore(&cap->qlock, flags);
+		return IRQ_HANDLED;
+	}
 	done = cap->active;
 	next = sg2002_next_buffer(cap);
 	cap->active = next;
@@ -678,6 +783,15 @@ static irqreturn_t sg2002_csi_irq(int irq, void *data)
 			     status & MAC_CSI_IRQ_HDR_ERR ? " header" : "",
 			     status & MAC_CSI_IRQ_WC_ERR ? " word-count" : "",
 			     status & MAC_CSI_IRQ_FIFO_FULL ? " FIFO-full" : "");
+	if (status & MAC_CSI_IRQ_FATAL) {
+		/*
+		 * A FIFO overrun loses byte alignment, while CRC and word-count
+		 * failures make the fixed DMA frame geometry untrustworthy. Stop
+		 * DMA immediately, then do the sleeping source and VB2 teardown in
+		 * process context.
+		 */
+		sg2002_capture_error(cap);
+	}
 	return IRQ_HANDLED;
 }
 
@@ -725,6 +839,10 @@ static int sg2002_start_streaming(struct vb2_queue *q, unsigned int count)
 	int i;
 	int ret;
 
+	if (cap->removing) {
+		ret = -ENODEV;
+		goto err_buffers;
+	}
 	if (!cap->source) {
 		ret = -ENOLINK;
 		goto err_buffers;
@@ -743,10 +861,12 @@ static int sg2002_start_streaming(struct vb2_queue *q, unsigned int count)
 	ret = video_device_pipeline_start(&cap->vdev, &cap->pipe);
 	if (ret)
 		goto err_buffers;
+	cap->pipeline_started = true;
 
 	ret = clk_bulk_prepare_enable(cap->num_clks, cap->clks);
 	if (ret)
-		goto err_pipeline;
+		goto err_stop;
+	cap->clocks_enabled = true;
 	for (i = 0; i < cap->num_clks; i++)
 		dev_dbg(cap->dev, "clock %s: %lu Hz\n", cap->clks[i].id,
 			 clk_get_rate(cap->clks[i].clk));
@@ -755,22 +875,22 @@ static int sg2002_start_streaming(struct vb2_queue *q, unsigned int count)
 	 * opened.  Preserve unrelated bits and apply that runtime policy here. */
 	ret = sg2002_ddr_disable_clock_gating(cap);
 	if (ret)
-		goto err_clocks;
+		goto err_stop;
 
 	ret = reset_control_assert(cap->resets);
 	if (ret)
-		goto err_clocks;
+		goto err_stop;
 	udelay(5);
 	ret = reset_control_deassert(cap->resets);
 	if (ret)
-		goto err_clocks;
+		goto err_stop;
 	sg2002_vip_init(cap);
 
 	cap->scratch = dma_alloc_coherent(cap->dev, SG2002_SIZE_IMAGE,
 					  &cap->scratch_dma, GFP_KERNEL);
 	if (!cap->scratch) {
 		ret = -ENOMEM;
-		goto err_clocks;
+		goto err_stop;
 	}
 
 	spin_lock_irqsave(&cap->qlock, flags);
@@ -780,27 +900,21 @@ static int sg2002_start_streaming(struct vb2_queue *q, unsigned int count)
 	spin_unlock_irqrestore(&cap->qlock, flags);
 	if (!first) {
 		ret = -ENOBUFS;
-		goto err_scratch;
+		goto err_stop;
 	}
 
 	ret = v4l2_subdev_enable_streams(cap->source, cap->source_pad, BIT(0));
 	if (ret && ret != -ENOIOCTLCMD)
-		goto err_scratch;
+		goto err_stop;
+	cap->source_streaming = true;
 
 	sg2002_csi_enable(cap, true);
 	sg2002_vi_enable(cap, first->dma_addr);
 	return 0;
 
-err_scratch:
-	if (cap->scratch)
-		dma_free_coherent(cap->dev, SG2002_SIZE_IMAGE, cap->scratch,
-				  cap->scratch_dma);
-	cap->scratch = NULL;
-err_clocks:
-	sg2002_ddr_restore_clock_gating(cap);
-	clk_bulk_disable_unprepare(cap->num_clks, cap->clks);
-err_pipeline:
-	video_device_pipeline_stop(&cap->vdev);
+err_stop:
+	sg2002_stop_capture(cap, VB2_BUF_STATE_QUEUED);
+	return ret;
 err_buffers:
 	sg2002_return_buffers(cap, VB2_BUF_STATE_QUEUED);
 	return ret;
@@ -810,20 +924,7 @@ static void sg2002_stop_streaming(struct vb2_queue *q)
 {
 	struct sg2002_capture *cap = vb2_get_drv_priv(q);
 
-	WRITE_ONCE(cap->streaming, false);
-	sg2002_vi_disable(cap);
-	sg2002_csi_enable(cap, false);
-	synchronize_irq(cap->vi_irq);
-	synchronize_irq(cap->csi_irq);
-	v4l2_subdev_disable_streams(cap->source, cap->source_pad, BIT(0));
-	sg2002_return_buffers(cap, VB2_BUF_STATE_ERROR);
-	if (cap->scratch)
-		dma_free_coherent(cap->dev, SG2002_SIZE_IMAGE, cap->scratch,
-				  cap->scratch_dma);
-	cap->scratch = NULL;
-	sg2002_ddr_restore_clock_gating(cap);
-	clk_bulk_disable_unprepare(cap->num_clks, cap->clks);
-	video_device_pipeline_stop(&cap->vdev);
+	sg2002_stop_capture(cap, VB2_BUF_STATE_ERROR);
 }
 
 static const struct vb2_ops sg2002_vb2_ops = {
@@ -997,11 +1098,11 @@ static void sg2002_notify(struct v4l2_subdev *sd, unsigned int notification,
 
 	/*
 	 * DMA geometry is fixed at 1920x1080 UYVY. A source change while it is
-	 * running cannot be applied safely, so make the queue fail until userspace
-	 * stops it and negotiates the fixed format again.
+	 * running cannot be applied safely, so stop DMA and fail the queue until
+	 * userspace negotiates the fixed format again.
 	 */
 	if (READ_ONCE(cap->streaming))
-		vb2_queue_error(&cap->queue);
+		sg2002_capture_error(cap);
 
 	v4l2_event_queue(&cap->vdev, event);
 }
@@ -1025,8 +1126,10 @@ static int sg2002_notify_bound(struct v4l2_async_notifier *notifier,
 	if (IS_ERR(source))
 		return PTR_ERR(source);
 
+	mutex_lock(&cap->lock);
 	cap->source = subdev;
 	cap->source_pad = source->index;
+	mutex_unlock(&cap->lock);
 	dev_info(cap->dev, "bound source %s pad %u\n", subdev->name,
 		 cap->source_pad);
 	return 0;
@@ -1039,7 +1142,15 @@ static void sg2002_notify_unbind(struct v4l2_async_notifier *notifier,
 	struct sg2002_capture *cap =
 		container_of(notifier, struct sg2002_capture, notifier);
 
-	cap->source = NULL;
+	mutex_lock(&cap->lock);
+	if (cap->source == subdev) {
+		/* The source remains valid until this callback returns. */
+		if (cap->clocks_enabled)
+			sg2002_capture_error(cap);
+		sg2002_stop_capture(cap, VB2_BUF_STATE_ERROR);
+		cap->source = NULL;
+	}
+	mutex_unlock(&cap->lock);
 }
 
 static int sg2002_notify_complete(struct v4l2_async_notifier *notifier)
@@ -1120,6 +1231,7 @@ static int sg2002_register_media(struct sg2002_capture *cap,
 	mutex_init(&cap->lock);
 	spin_lock_init(&cap->qlock);
 	INIT_LIST_HEAD(&cap->queued);
+	INIT_WORK(&cap->error_work, sg2002_error_work);
 
 	q->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	q->io_modes = VB2_MMAP | VB2_DMABUF;
@@ -1174,12 +1286,15 @@ static int sg2002_register_media(struct sg2002_capture *cap,
 err_notifier_cleanup:
 	v4l2_async_nf_cleanup(&cap->notifier);
 err_video_unregister:
-	video_unregister_device(vdev);
-	goto err_queue_release;
+	vb2_video_unregister_device(vdev);
+	goto err_entity_cleanup_unregistered;
 err_entity_cleanup:
 	media_entity_cleanup(&vdev->entity);
 err_queue_release:
 	vb2_queue_release(q);
+	goto err_media_unregister;
+err_entity_cleanup_unregistered:
+	media_entity_cleanup(&vdev->entity);
 err_media_unregister:
 	media_device_unregister(&cap->mdev);
 err_v4l2_unregister:
@@ -1282,9 +1397,19 @@ static void sg2002_remove(struct platform_device *pdev)
 {
 	struct sg2002_capture *cap = platform_get_drvdata(pdev);
 
+	mutex_lock(&cap->lock);
+	cap->removing = true;
+	if (cap->clocks_enabled)
+		sg2002_capture_error(cap);
+	mutex_unlock(&cap->lock);
+	cancel_work_sync(&cap->error_work);
+	/*
+	 * Release VB2 before the notifier: queue release calls stop_streaming(),
+	 * which may still need cap->source to stop the remote subdevice.
+	 */
+	vb2_video_unregister_device(&cap->vdev);
 	v4l2_async_nf_unregister(&cap->notifier);
 	v4l2_async_nf_cleanup(&cap->notifier);
-	video_unregister_device(&cap->vdev);
 	media_device_unregister(&cap->mdev);
 	v4l2_device_unregister(&cap->v4l2_dev);
 	media_device_cleanup(&cap->mdev);
