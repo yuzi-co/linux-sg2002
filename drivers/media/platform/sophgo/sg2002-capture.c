@@ -25,6 +25,7 @@
 
 #include <media/v4l2-async.h>
 #include <media/v4l2-device.h>
+#include <media/v4l2-event.h>
 #include <media/v4l2-fwnode.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-mc.h>
@@ -801,6 +802,7 @@ static int sg2002_start_streaming(struct vb2_queue *q, unsigned int count)
 {
 	struct sg2002_capture *cap = vb2_get_drv_priv(q);
 	struct sg2002_buffer *first;
+	struct v4l2_dv_timings timings;
 	unsigned long flags;
 	int i;
 	int ret;
@@ -809,6 +811,16 @@ static int sg2002_start_streaming(struct vb2_queue *q, unsigned int count)
 		ret = -ENOLINK;
 		goto err_buffers;
 	}
+
+	/*
+	 * LT6911UXC has no HPD interrupt. Its query_dv_timings operation polls
+	 * the current mode and updates its active source-pad format, which must
+	 * happen before pipeline link validation reads that format.
+	 */
+	ret = v4l2_subdev_call(cap->source, pad, query_dv_timings,
+			       cap->source_pad, &timings);
+	if (ret && ret != -ENOIOCTLCMD)
+		goto err_buffers;
 
 	ret = video_device_pipeline_start(&cap->vdev, &cap->pipe);
 	if (ret)
@@ -1037,6 +1049,15 @@ static int sg2002_s_fmt(struct file *file, void *priv, struct v4l2_format *fmt)
 	return sg2002_try_fmt(file, priv, fmt);
 }
 
+static int sg2002_subscribe_event(struct v4l2_fh *fh,
+				  const struct v4l2_event_subscription *sub)
+{
+	if (sub->type != V4L2_EVENT_SOURCE_CHANGE)
+		return -EINVAL;
+
+	return v4l2_src_change_event_subscribe(fh, sub);
+}
+
 static int sg2002_enum_framesizes(struct file *file, void *priv,
 				  struct v4l2_frmsizeenum *fsize)
 {
@@ -1065,6 +1086,8 @@ static const struct v4l2_ioctl_ops sg2002_ioctl_ops = {
 	.vidioc_expbuf = vb2_ioctl_expbuf,
 	.vidioc_streamon = vb2_ioctl_streamon,
 	.vidioc_streamoff = vb2_ioctl_streamoff,
+	.vidioc_subscribe_event = sg2002_subscribe_event,
+	.vidioc_unsubscribe_event = v4l2_event_unsubscribe,
 };
 
 static const struct v4l2_file_operations sg2002_fops = {
@@ -1078,12 +1101,70 @@ static const struct v4l2_file_operations sg2002_fops = {
 
 static int sg2002_link_validate(struct media_link *link)
 {
-	return 0;
+	struct video_device *vdev =
+		media_entity_to_video_device(link->sink->entity);
+	struct sg2002_capture *cap = video_get_drvdata(vdev);
+	struct v4l2_subdev *source;
+	struct v4l2_subdev_format source_fmt = {
+		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+		.pad = link->source->index,
+	};
+	int ret;
+
+	if (!is_media_entity_v4l2_subdev(link->source->entity))
+		return -EPIPE;
+
+	source = media_entity_to_v4l2_subdev(link->source->entity);
+	ret = v4l2_subdev_call(source, pad, get_fmt, NULL, &source_fmt);
+	if (ret)
+		return ret;
+
+	if (source_fmt.format.width == SG2002_WIDTH &&
+	    source_fmt.format.height == SG2002_HEIGHT &&
+	    source_fmt.format.code == MEDIA_BUS_FMT_UYVY8_1X16 &&
+	    source_fmt.format.field == V4L2_FIELD_NONE)
+		return 0;
+
+	dev_dbg(cap->dev,
+		"link '%s':%u -> '%s':%u has unsupported format %ux%u code %#x field %u\n",
+		link->source->entity->name, link->source->index,
+		link->sink->entity->name, link->sink->index,
+		source_fmt.format.width, source_fmt.format.height,
+		source_fmt.format.code, source_fmt.format.field);
+
+	return -EPIPE;
 }
 
 static const struct media_entity_operations sg2002_entity_ops = {
 	.link_validate = sg2002_link_validate,
 };
+
+static void sg2002_notify(struct v4l2_subdev *sd, unsigned int notification,
+			  void *arg)
+{
+	struct sg2002_capture *cap =
+		container_of(sd->v4l2_dev, struct sg2002_capture, v4l2_dev);
+	struct media_pad *source;
+	struct v4l2_event *event = arg;
+
+	if (notification != V4L2_DEVICE_NOTIFY_EVENT ||
+	    event->type != V4L2_EVENT_SOURCE_CHANGE)
+		return;
+
+	source = media_pad_remote_pad_first(&cap->pad);
+	if (!source || source->entity != &sd->entity)
+		return;
+
+	/*
+	 * DMA geometry is fixed at 1920x1080 UYVY. A source change while it is
+	 * running cannot be applied safely, so make the queue fail until userspace
+	 * stops it and negotiates the fixed format again.
+	 */
+	if (READ_ONCE(cap->streaming))
+		vb2_queue_error(&cap->queue);
+
+	v4l2_event_queue(&cap->vdev, event);
+}
 
 static int sg2002_notify_bound(struct v4l2_async_notifier *notifier,
 			       struct v4l2_subdev *subdev,
@@ -1190,6 +1271,7 @@ static int sg2002_register_media(struct sg2002_capture *cap,
 	ret = v4l2_device_register(cap->dev, &cap->v4l2_dev);
 	if (ret)
 		goto err_media_cleanup;
+	cap->v4l2_dev.notify = sg2002_notify;
 
 	ret = media_device_register(&cap->mdev);
 	if (ret)
