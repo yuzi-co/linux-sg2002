@@ -91,7 +91,8 @@ struct coda_devtype {
 	bool			has_software_reset;
 	bool			rstc_assert_deassert;
 	bool			skip_code_download;
-	bool			has_extended_h264_header;
+	/* Coda980's H.264 encoder extends the Coda9 command ABI. */
+	bool			has_coda980_h264_abi;
 };
 
 struct coda_aux_buf {
