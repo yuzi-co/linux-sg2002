@@ -10,7 +10,9 @@
 
 #include <linux/clk.h>
 #include <linux/delay.h>
+#include <linux/dma-buf.h>
 #include <linux/dma-mapping.h>
+#include <linux/iosys-map.h>
 #include <linux/irqreturn.h>
 #include <linux/kernel.h>
 #include <linux/log2.h>
@@ -1059,6 +1061,7 @@ static int coda_encoder_reqbufs(struct coda_ctx *ctx,
 		if (ret < 0)
 			return ret;
 		if (ctx->dev->devtype->nv21_to_nv12 &&
+		    q_data_src->fourcc == V4L2_PIX_FMT_NV21 &&
 		    !ctx->input_staging.vaddr) {
 			ret = coda_alloc_context_buf(ctx, &ctx->input_staging,
 					     q_data_src->sizeimage,
@@ -1499,10 +1502,16 @@ static int coda_stage_nv21(struct coda_ctx *ctx,
 {
 	struct coda_aux_buf *staging = &ctx->input_staging;
 	struct vb2_buffer *vb = &src_buf->vb2_buf;
+	struct dma_buf *dbuf = vb->planes[0].dbuf;
+	struct iosys_map map = IOSYS_MAP_INIT_VADDR(NULL);
 	u8 *src, *dst;
 	size_t chroma_size, i, luma_size, size;
+	bool mapped = false;
+	bool cpu_access = false;
+	int ret;
 
-	if (!ctx->dev->devtype->nv21_to_nv12)
+	if (!ctx->dev->devtype->nv21_to_nv12 ||
+	    q_data->fourcc != V4L2_PIX_FMT_NV21)
 		return 0;
 	if (!staging->vaddr || !q_data->bytesperline || !q_data->height)
 		return -EINVAL;
@@ -1515,18 +1524,53 @@ static int coda_stage_nv21(struct coda_ctx *ctx,
 	    size > vb2_get_plane_payload(vb, 0))
 		return -EINVAL;
 
-	src = vb2_plane_vaddr(vb, 0);
-	if (!src)
-		return -EFAULT;
-
 	dst = staging->vaddr;
-	memcpy(dst, src, luma_size);
-	for (i = 0; i < chroma_size; i += 2) {
-		dst[luma_size + i] = src[luma_size + i + 1];
-		dst[luma_size + i + 1] = src[luma_size + i];
+	if (vb->memory == VB2_MEMORY_DMABUF) {
+		/*
+		 * vb2 maps imported DMA-BUFs for the codec DMA address, but
+		 * NV21 needs a CPU VU-to-UV conversion before this encoder can
+		 * consume it. Bracket our separate CPU mapping explicitly.
+		 */
+		if (!dbuf)
+			return -EINVAL;
+
+		ret = dma_buf_begin_cpu_access(dbuf, DMA_FROM_DEVICE);
+		if (ret)
+			return ret;
+		cpu_access = true;
+
+		ret = dma_buf_vmap_unlocked(dbuf, &map);
+		if (ret)
+			goto out_cpu_access;
+		mapped = true;
+		iosys_map_memcpy_from(dst, &map, 0, size);
+	} else {
+		src = vb2_plane_vaddr(vb, 0);
+		if (!src)
+			return -EFAULT;
+		memcpy(dst, src, size);
 	}
 
-	return 0;
+	for (i = 0; i < chroma_size; i += 2) {
+		u8 chroma = dst[luma_size + i];
+
+		dst[luma_size + i] = dst[luma_size + i + 1];
+		dst[luma_size + i + 1] = chroma;
+	}
+
+	ret = 0;
+out_cpu_access:
+	if (mapped)
+		dma_buf_vunmap_unlocked(dbuf, &map);
+	if (cpu_access) {
+		int end_ret;
+
+		end_ret = dma_buf_end_cpu_access(dbuf, DMA_FROM_DEVICE);
+		if (!ret)
+			ret = end_ret;
+	}
+
+	return ret;
 }
 
 static int coda_prepare_encode(struct coda_ctx *ctx)
