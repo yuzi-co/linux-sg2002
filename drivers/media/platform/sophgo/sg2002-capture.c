@@ -60,7 +60,6 @@
 #define MAC_CSI_IRQ_ERRORS	GENMASK(4, 0)
 #define MAC_CSI_IRQ_RESERVED	GENMASK(7, 5)
 #define MAC_CSI_VC_MAP		(MAC_CSI_BASE + 0x18)
-#define MAC_CSI_DECODE_STATUS	(MAC_CSI_BASE + 0x40)
 #define MAC_CSI_IRQ_STATUS	(MAC_CSI_BASE + 0x60)
 #define MAC_CSI_VGEN		(MAC_CSI_BASE + 0x70)
 #define MAC_CSI_VGEN_MODE	GENMASK(1, 0)
@@ -91,21 +90,14 @@
 #define WRAP_PHY4_SETTLE		GENMASK(7, 0)
 #define WRAP_PHY4_AUTO_IGNORE	BIT(16)
 #define WRAP_PHY4_AUTO_SYNC	BIT(17)
-#define WRAP_PHY4_DEBUG0	(WRAP_PHY4_BASE + 0x90)
-#define WRAP_PHY4_DEBUG1	(WRAP_PHY4_BASE + 0x94)
 
 /* VI FE0 CSI bridge and DMA6. */
 #define VI_CSIBDG0		0x00800
 #define VI_CSIBDG_TOP_CTRL	(VI_CSIBDG0 + 0x00)
 #define VI_CSIBDG_INT_CTRL	(VI_CSIBDG0 + 0x04)
 #define VI_CSIBDG_CH0_SIZE	(VI_CSIBDG0 + 0x10)
-#define VI_CSIBDG_CH0_DEBUG0	(VI_CSIBDG0 + 0xa0)
-#define VI_CSIBDG_CH0_DEBUG1	(VI_CSIBDG0 + 0xa4)
-#define VI_CSIBDG_CH0_DEBUG2	(VI_CSIBDG0 + 0xa8)
-#define VI_CSIBDG_CH0_DEBUG3	(VI_CSIBDG0 + 0xac)
 #define VI_CSIBDG_INT_STATUS0	(VI_CSIBDG0 + 0xe0)
 #define VI_CSIBDG_INT_STATUS1	(VI_CSIBDG0 + 0xe4)
-#define VI_CSIBDG_DEBUG		(VI_CSIBDG0 + 0xe8)
 #define VI_CSIBDG_CSI_MODE	GENMASK(1, 0)
 #define VI_CSIBDG_YUV_INPUT	BIT(2)
 #define VI_CSIBDG_CH0_DMA	BIT(6)
@@ -126,8 +118,6 @@
 #define VI_DMA_SEG_LEN		(VI_DMA6 + 0x08)
 #define VI_DMA_STRIDE		(VI_DMA6 + 0x0c)
 #define VI_DMA_SEG_NUM		(VI_DMA6 + 0x10)
-#define VI_DMA_STATUS		(VI_DMA6 + 0x14)
-#define VI_DMA_DUMMY		(VI_DMA6 + 0x1c)
 #define VI_DMA_BASE_HIGH	GENMASK(15, 8)
 #define VI_DMA_BASE_SEL		BIT(16)
 #define VI_DMA_STRIDE_SEL	BIT(17)
@@ -147,7 +137,6 @@
 #define VI_ISP_CTRL_MODE1	(VI_ISP_TOP + 0x2c)
 #define VI_ISP_SCENARIOS_CTRL	(VI_ISP_TOP + 0x30)
 #define VI_ISP_SW_RST		(VI_ISP_TOP + 0x34)
-#define VI_ISP_BLK_IDLE		(VI_ISP_TOP + 0x38)
 #define VI_ISP_SCENARIOS_MASK	GENMASK(22, 2)
 #define VI_ISP_SCENARIO_PRE2BE_L	BIT(2)
 #define VI_ISP_SCENARIO_BE_WDMA_L	BIT(9)
@@ -159,16 +148,6 @@
 #define VI_ISP_FE0_HW_TRIGGER	BIT(0)
 #define VI_ISP_FE0_HW_SHADOW	BIT(16)
 #define VI_ISP_FE0_HW_PQ		BIT(0)
-#define VI_PRE_RAW_DEBUG_STATE	0x0002c
-#define VI_PRE_RAW_DEBUG_INFO	0x00034
-#define VI_WDMA_CORE0		0x72000
-#define VI_WDMA_IP_DISABLE	(VI_WDMA_CORE0 + 0x04)
-#define VI_WDMA_DISABLE_SEGLEN	(VI_WDMA_CORE0 + 0x08)
-#define VI_WDMA_STATUS0		(VI_WDMA_CORE0 + 0x10)
-#define VI_WDMA_STATUS1		(VI_WDMA_CORE0 + 0x14)
-#define VI_WDMA_RING_ENABLE	(VI_WDMA_CORE0 + 0x18)
-#define VI_WDMA_PERF		(VI_WDMA_CORE0 + 0x20)
-#define VI_WDMA_NEXT_ADDR0	(VI_WDMA_CORE0 + 0x100)
 
 /* Video subsystem glue needed before either CSI MAC0 or VI is used. */
 #define VIP_SYS_RESET		0x00
@@ -187,14 +166,6 @@
 #define VIP_SYS_LP_DISABLE	0x00000c01
 #define VIP_SYS_SC_LP_DISABLE	0x0c010c01
 #define VIP_SYS_CSI_MAC0_RATIO	0x38
-#define VIP_SYS_LP_STATUS	0x50
-#define VIP_SYS_OFF_MON1	0xb0
-#define VIP_SYS_OFF_MON2	0xb4
-#define VIP_SYS_OFF_MON3	0xd0
-#define VIP_SYS_OFF_MON4	0xd4
-#define VIP_SYS_OFF_MON5	0xd8
-#define VIP_SYS_OFF_MON6	0xdc
-#define VIP_SYS_OFF_MON7	0xe0
 #define VIP_SYS_CSI_MAC0_DIVIDER GENMASK(20, 16)
 #define VIP_SYS_CSI_MAC0_DIVIDER_ENABLE BIT(0)
 #define VIP_SYS_CSI_MAC0_UPDATE	BIT(2)
@@ -205,37 +176,6 @@
 #define SG2002_HS_SETTLE		8
 #define SG2002_NUM_DATA_LANES	4
 #define SG2002_NUM_PHYS_LANES	6
-#define SG2002_STAGE_PHY_RESET	1
-#define SG2002_STAGE_MAC_RESET	2
-#define SG2002_STAGE_AXI_GATE	3
-#define SG2002_STAGE_CLK_SELECT	4
-#define SG2002_STAGE_CSI		5
-#define SG2002_STAGE_BRIDGE	6
-#define SG2002_STAGE_DMA		7
-#define SG2002_STAGE_IRQ		8
-
-static unsigned int bringup_stage = SG2002_STAGE_IRQ;
-module_param(bringup_stage, uint, 0600);
-MODULE_PARM_DESC(bringup_stage,
-		 "bring-up stage: 0=source/clocks, 1=PHY reset, 2=MAC reset, 3=AXI gate, 4=clock select, 5=CSI, 6=bridge, 7=DMA, 8=IRQ");
-
-static unsigned int bringup_skip;
-module_param(bringup_skip, uint, 0600);
-MODULE_PARM_DESC(bringup_skip, "bitmask of prerequisite stages 1-5 to skip");
-
-static bool disable_ddr_clock_gating = true;
-module_param(disable_ddr_clock_gating, bool, 0600);
-MODULE_PARM_DESC(disable_ddr_clock_gating,
-		 "disable DDR-top path gating while DMA is streaming");
-
-static bool configure_scenarios = true;
-module_param(configure_scenarios, bool, 0600);
-MODULE_PARM_DESC(configure_scenarios,
-		 "configure the vendor single-YUV VI DMA scenario");
-
-#define SG2002_STAGE_ENABLED(cap, stage) \
-	((cap)->active_stage >= (stage) && \
-	 ((stage) > SG2002_STAGE_CSI || !((cap)->active_skip & BIT(stage))))
 
 struct sg2002_buffer {
 	struct vb2_v4l2_buffer vb;
@@ -276,8 +216,6 @@ struct sg2002_capture {
 	struct list_head queued;
 	struct sg2002_buffer *active;
 	unsigned int sequence;
-	unsigned int active_stage;
-	unsigned int active_skip;
 	bool streaming;
 
 	void *scratch;
@@ -403,50 +341,44 @@ static void sg2002_vip_init(struct sg2002_capture *cap)
 {
 	u32 value;
 
-	if (SG2002_STAGE_ENABLED(cap, SG2002_STAGE_MAC_RESET)) {
-		value = readl(cap->vip_sys + VIP_SYS_RESET);
-		writel(value | VIP_SYS_CSI_MAC0_RESET,
-		       cap->vip_sys + VIP_SYS_RESET);
-		udelay(20);
-		writel(value & ~VIP_SYS_CSI_MAC0_RESET,
-		       cap->vip_sys + VIP_SYS_RESET);
-	}
+	value = readl(cap->vip_sys + VIP_SYS_RESET);
+	writel(value | VIP_SYS_CSI_MAC0_RESET, cap->vip_sys + VIP_SYS_RESET);
+	udelay(20);
+	writel(value & ~VIP_SYS_CSI_MAC0_RESET, cap->vip_sys + VIP_SYS_RESET);
 
-	if (SG2002_STAGE_ENABLED(cap, SG2002_STAGE_AXI_GATE)) {
-		sg2002_update_bits(cap->vip_sys, VIP_SYS_CLK_ENABLE,
-				    VIP_SYS_AXI_ISP_ENABLE,
-				    VIP_SYS_AXI_ISP_ENABLE);
-		/* CVI_SYS_Init disables automatic low-power entry for all VIP
-		 * fabrics before opening VI.  In particular, DMA6 reaches memory
-		 * through the offline AXI and X2P paths. */
-		writel(VIP_SYS_LP_DISABLE, cap->vip_sys + VIP_SYS_AXI_RT_LP);
-		writel(VIP_SYS_LP_DISABLE, cap->vip_sys + VIP_SYS_AXI_OFFLINE_LP);
-		writel(VIP_SYS_LP_DISABLE, cap->vip_sys + VIP_SYS_X2P_LP);
-		writel(VIP_SYS_SC_LP_DISABLE, cap->vip_sys + VIP_SYS_SC_AXI_LP);
-		/* Match the vendor VIP base probe: SC_TOP and ISP_RAW use their
-		 * offline AXI ports, while ISP_YUV remains on the online port. */
-		sg2002_update_bits(cap->vip_sys, VIP_SYS_AXI_SWITCH,
-				    VIP_SYS_AXI_OFFLINE_PORTS,
-				    VIP_SYS_AXI_VENDOR_ROUTES);
-	}
-	if (SG2002_STAGE_ENABLED(cap, SG2002_STAGE_CLK_SELECT)) {
-		sg2002_update_bits(cap->vip_sys, VIP_SYS_CLK_SELECT,
-				    VIP_SYS_CSI_MAC0_SOURCE,
-				    FIELD_PREP(VIP_SYS_CSI_MAC0_SOURCE, 2));
-		/* VIP_SYS2 is 594 MHz from the boot clock tree.  Match the
-		 * vendor RX_MAC_CLK_600M sequence: ratio 31 gives the full
-		 * parent rate, then enable and latch the normal divider. */
-		sg2002_update_bits(cap->vip_sys, VIP_SYS_CSI_MAC0_RATIO,
-				    VIP_SYS_CSI_MAC0_DIVIDER,
-				    FIELD_PREP(VIP_SYS_CSI_MAC0_DIVIDER, 31));
-		sg2002_update_bits(cap->vip_sys, VIP_SYS_CSI_MAC0_RATIO,
-				    VIP_SYS_CSI_MAC0_DIVIDER_ENABLE,
-				    VIP_SYS_CSI_MAC0_DIVIDER_ENABLE);
-		sg2002_update_bits(cap->vip_sys, VIP_SYS_CSI_MAC0_RATIO,
-				    VIP_SYS_CSI_MAC0_UPDATE,
-				    VIP_SYS_CSI_MAC0_UPDATE);
-		udelay(5);
-	}
+	sg2002_update_bits(cap->vip_sys, VIP_SYS_CLK_ENABLE,
+			   VIP_SYS_AXI_ISP_ENABLE, VIP_SYS_AXI_ISP_ENABLE);
+	/*
+	 * CVI_SYS_Init disables automatic low-power entry for all VIP fabrics.
+	 * DMA6 reaches memory through the offline AXI and X2P paths.
+	 */
+	writel(VIP_SYS_LP_DISABLE, cap->vip_sys + VIP_SYS_AXI_RT_LP);
+	writel(VIP_SYS_LP_DISABLE, cap->vip_sys + VIP_SYS_AXI_OFFLINE_LP);
+	writel(VIP_SYS_LP_DISABLE, cap->vip_sys + VIP_SYS_X2P_LP);
+	writel(VIP_SYS_SC_LP_DISABLE, cap->vip_sys + VIP_SYS_SC_AXI_LP);
+	/*
+	 * Match the vendor VIP base probe: SC_TOP and ISP_RAW use offline AXI
+	 * ports, while ISP_YUV remains on the online port.
+	 */
+	sg2002_update_bits(cap->vip_sys, VIP_SYS_AXI_SWITCH,
+			   VIP_SYS_AXI_OFFLINE_PORTS, VIP_SYS_AXI_VENDOR_ROUTES);
+
+	sg2002_update_bits(cap->vip_sys, VIP_SYS_CLK_SELECT,
+			   VIP_SYS_CSI_MAC0_SOURCE,
+			    FIELD_PREP(VIP_SYS_CSI_MAC0_SOURCE, 2));
+	/*
+	 * VIP_SYS2 is 594 MHz from the boot clock tree. Ratio 31 gives the full
+	 * parent rate; enable and latch the normal divider.
+	 */
+	sg2002_update_bits(cap->vip_sys, VIP_SYS_CSI_MAC0_RATIO,
+			   VIP_SYS_CSI_MAC0_DIVIDER,
+			    FIELD_PREP(VIP_SYS_CSI_MAC0_DIVIDER, 31));
+	sg2002_update_bits(cap->vip_sys, VIP_SYS_CSI_MAC0_RATIO,
+			   VIP_SYS_CSI_MAC0_DIVIDER_ENABLE,
+			    VIP_SYS_CSI_MAC0_DIVIDER_ENABLE);
+	sg2002_update_bits(cap->vip_sys, VIP_SYS_CSI_MAC0_RATIO,
+			   VIP_SYS_CSI_MAC0_UPDATE, VIP_SYS_CSI_MAC0_UPDATE);
+	udelay(5);
 	dev_dbg(cap->dev,
 		 "vip: axi=%#x lp=%#x/%#x/%#x/%#x select=%#x mac0-ratio=%#x\n",
 		 readl(cap->vip_sys + VIP_SYS_AXI_SWITCH),
@@ -610,43 +542,30 @@ static void sg2002_vi_enable(struct sg2002_capture *cap, dma_addr_t addr)
 	writel(~0U, cap->vi + VI_ISP_INT_EVENT1);
 	writel(~0U, cap->vi + VI_ISP_INT_EVENT2);
 	ctrl = FIELD_PREP(VI_CSIBDG_CSI_MODE, 1) | VI_CSIBDG_YUV_INPUT;
-	if (SG2002_STAGE_ENABLED(cap, SG2002_STAGE_DMA)) {
-		writel(SG2002_BYTES_PER_LINE, cap->vi + VI_DMA_SEG_LEN);
-		writel(SG2002_BYTES_PER_LINE, cap->vi + VI_DMA_STRIDE);
-		writel(SG2002_HEIGHT, cap->vi + VI_DMA_SEG_NUM);
-		sg2002_dma_set_addr(cap, addr);
-		ctrl |= VI_CSIBDG_CH0_DMA;
-	}
+	writel(SG2002_BYTES_PER_LINE, cap->vi + VI_DMA_SEG_LEN);
+	writel(SG2002_BYTES_PER_LINE, cap->vi + VI_DMA_STRIDE);
+	writel(SG2002_HEIGHT, cap->vi + VI_DMA_SEG_NUM);
+	sg2002_dma_set_addr(cap, addr);
+	ctrl |= VI_CSIBDG_CH0_DMA;
 	writel(ctrl, cap->vi + VI_CSIBDG_TOP_CTRL);
 	writel(0, cap->vi + VI_CSIBDG_INT_CTRL);
 	writel(FIELD_PREP(VI_CSIBDG_WIDTH, SG2002_WIDTH - 1) |
 	       FIELD_PREP(VI_CSIBDG_HEIGHT, SG2002_HEIGHT - 1),
 	       cap->vi + VI_CSIBDG_CH0_SIZE);
 
-	if (SG2002_STAGE_ENABLED(cap, SG2002_STAGE_DMA))
-		sg2002_preraw_fe0_trigger(cap);
-	else
-		writel(0, cap->vi + VI_PRE_RAW_FRAME_VALID);
+	sg2002_preraw_fe0_trigger(cap);
 	writel(VI_ISP_FE0_HW_TRIGGER | VI_ISP_FE0_HW_SHADOW,
 	       cap->vi + VI_ISP_CTRL_MODE0);
 	writel(VI_ISP_FE0_HW_PQ, cap->vi + VI_ISP_CTRL_MODE1);
-	if (configure_scenarios &&
-	    SG2002_STAGE_ENABLED(cap, SG2002_STAGE_DMA))
-		sg2002_configure_single_yuv_scenario(cap);
-	if (SG2002_STAGE_ENABLED(cap, SG2002_STAGE_DMA))
-		sg2002_dma_set_hw_mode(cap);
+	sg2002_configure_single_yuv_scenario(cap);
+	sg2002_dma_set_hw_mode(cap);
 	writel(0x00000d01, cap->vi + VI_ISP_SW_CTRL1);
 	writel(0x0d010000, cap->vi + VI_ISP_SW_CTRL0);
 
 	sg2002_csibdg_clear_status(cap);
-	WRITE_ONCE(cap->streaming,
-		   SG2002_STAGE_ENABLED(cap, SG2002_STAGE_IRQ));
-	if (SG2002_STAGE_ENABLED(cap, SG2002_STAGE_IRQ)) {
-		writel(VI_ISP_FRAME_DONE_FE0_CH0,
-		       cap->vi + VI_ISP_INT_EVENT0_EN);
-		if (SG2002_STAGE_ENABLED(cap, SG2002_STAGE_CSI))
-			sg2002_csi_irq_enable(cap, true);
-	}
+	WRITE_ONCE(cap->streaming, true);
+	writel(VI_ISP_FRAME_DONE_FE0_CH0, cap->vi + VI_ISP_INT_EVENT0_EN);
+	sg2002_csi_irq_enable(cap, true);
 	ctrl |= VI_CSIBDG_CSI_ENABLE | VI_CSIBDG_UPDATE;
 	writel(ctrl, cap->vi + VI_CSIBDG_TOP_CTRL);
 }
@@ -714,8 +633,7 @@ static irqreturn_t sg2002_irq(int irq, void *data)
 		return IRQ_NONE;
 	if (!(status0 & VI_ISP_FRAME_DONE_FE0_CH0))
 		return IRQ_HANDLED;
-	if (!SG2002_STAGE_ENABLED(cap, SG2002_STAGE_IRQ) ||
-	    !READ_ONCE(cap->streaming))
+	if (!READ_ONCE(cap->streaming))
 		return IRQ_HANDLED;
 
 	spin_lock_irqsave(&cap->qlock, flags);
@@ -833,38 +751,26 @@ static int sg2002_start_streaming(struct vb2_queue *q, unsigned int count)
 		dev_dbg(cap->dev, "clock %s: %lu Hz\n", cap->clks[i].id,
 			 clk_get_rate(cap->clks[i].clk));
 
-	cap->active_stage = min(bringup_stage, (unsigned int)SG2002_STAGE_IRQ);
-	cap->active_skip = bringup_skip;
-	dev_dbg(cap->dev, "starting bring-up stage %u, skip mask %#x\n",
-		 cap->active_stage, cap->active_skip);
-
 	/* CVI_SYS_Init disables all twelve DDR-top path gates before VI is
 	 * opened.  Preserve unrelated bits and apply that runtime policy here. */
-	if (disable_ddr_clock_gating &&
-	    SG2002_STAGE_ENABLED(cap, SG2002_STAGE_DMA)) {
-		ret = sg2002_ddr_disable_clock_gating(cap);
-		if (ret)
-			goto err_clocks;
-	}
+	ret = sg2002_ddr_disable_clock_gating(cap);
+	if (ret)
+		goto err_clocks;
 
-	if (SG2002_STAGE_ENABLED(cap, SG2002_STAGE_PHY_RESET)) {
-		ret = reset_control_assert(cap->resets);
-		if (ret)
-			goto err_clocks;
-		udelay(5);
-		ret = reset_control_deassert(cap->resets);
-		if (ret)
-			goto err_clocks;
-	}
+	ret = reset_control_assert(cap->resets);
+	if (ret)
+		goto err_clocks;
+	udelay(5);
+	ret = reset_control_deassert(cap->resets);
+	if (ret)
+		goto err_clocks;
 	sg2002_vip_init(cap);
 
-	if (SG2002_STAGE_ENABLED(cap, SG2002_STAGE_DMA)) {
-		cap->scratch = dma_alloc_coherent(cap->dev, SG2002_SIZE_IMAGE,
-						  &cap->scratch_dma, GFP_KERNEL);
-		if (!cap->scratch) {
-			ret = -ENOMEM;
-			goto err_clocks;
-		}
+	cap->scratch = dma_alloc_coherent(cap->dev, SG2002_SIZE_IMAGE,
+					  &cap->scratch_dma, GFP_KERNEL);
+	if (!cap->scratch) {
+		ret = -ENOMEM;
+		goto err_clocks;
 	}
 
 	spin_lock_irqsave(&cap->qlock, flags);
@@ -881,72 +787,8 @@ static int sg2002_start_streaming(struct vb2_queue *q, unsigned int count)
 	if (ret && ret != -ENOIOCTLCMD)
 		goto err_scratch;
 
-	if (SG2002_STAGE_ENABLED(cap, SG2002_STAGE_CSI))
-		sg2002_csi_enable(cap, true);
-	if (SG2002_STAGE_ENABLED(cap, SG2002_STAGE_BRIDGE))
-		sg2002_vi_enable(cap,
-				 SG2002_STAGE_ENABLED(cap, SG2002_STAGE_IRQ) ?
-				 first->dma_addr : cap->scratch_dma);
-	if (SG2002_STAGE_ENABLED(cap, SG2002_STAGE_CSI)) {
-		usleep_range(20000, 21000);
-		dev_dbg(cap->dev,
-			 "status: decode=%#x csi-irq=%#x phy=%#x/%#x events=%#x/%#x/%#x en=%#x/%#x/%#x\n",
-			 readl(cap->mac + MAC_CSI_DECODE_STATUS),
-			 readl(cap->mac + MAC_CSI_IRQ_STATUS),
-			 readl(cap->wrap + WRAP_PHY4_DEBUG0),
-			 readl(cap->wrap + WRAP_PHY4_DEBUG1),
-			 readl(cap->vi + VI_ISP_INT_EVENT0),
-			 readl(cap->vi + VI_ISP_INT_EVENT1),
-			 readl(cap->vi + VI_ISP_INT_EVENT2),
-			 readl(cap->vi + VI_ISP_INT_EVENT0_EN),
-			 readl(cap->vi + VI_ISP_INT_EVENT1_EN),
-			 readl(cap->vi + VI_ISP_INT_EVENT2_EN));
-		dev_dbg(cap->dev,
-			 "bridge: ctrl=%#x/%#x count=%#x/%#x/%#x/%#x irq=%#x/%#x debug=%#x\n",
-			 readl(cap->vi + VI_CSIBDG_TOP_CTRL),
-			 readl(cap->vi + VI_CSIBDG_INT_CTRL),
-			 readl(cap->vi + VI_CSIBDG_CH0_DEBUG0),
-			 readl(cap->vi + VI_CSIBDG_CH0_DEBUG1),
-			 readl(cap->vi + VI_CSIBDG_CH0_DEBUG2),
-			 readl(cap->vi + VI_CSIBDG_CH0_DEBUG3),
-			 readl(cap->vi + VI_CSIBDG_INT_STATUS0),
-			 readl(cap->vi + VI_CSIBDG_INT_STATUS1),
-			 readl(cap->vi + VI_CSIBDG_DEBUG));
-		dev_dbg(cap->dev,
-			 "vi: preraw valid/state/done=%#x/%#x/%#x dma6 ctrl/status=%#x/%#x\n",
-			 readl(cap->vi + VI_PRE_RAW_FRAME_VALID),
-			 readl(cap->vi + VI_PRE_RAW_DEBUG_STATE),
-			 readl(cap->vi + VI_PRE_RAW_DEBUG_INFO),
-			 readl(cap->vi + VI_DMA_SYS_CTRL),
-			 readl(cap->vi + VI_DMA_STATUS));
-		dev_dbg(cap->dev,
-			 "dma6: target=%pad base=%#x geometry=%#x/%#x/%#x dummy=%#x\n",
-			 &first->dma_addr, readl(cap->vi + VI_DMA_BASE_ADDR),
-			 readl(cap->vi + VI_DMA_SEG_LEN),
-			 readl(cap->vi + VI_DMA_STRIDE),
-			 readl(cap->vi + VI_DMA_SEG_NUM),
-			 readl(cap->vi + VI_DMA_DUMMY));
-		dev_dbg(cap->dev,
-			 "wdma0: disable=%#x/%#x ring=%#x perf=%#x status=%#x/%#x next=%#x idle=%#x\n",
-			 readl(cap->vi + VI_WDMA_IP_DISABLE),
-			 readl(cap->vi + VI_WDMA_DISABLE_SEGLEN),
-			 readl(cap->vi + VI_WDMA_RING_ENABLE),
-			 readl(cap->vi + VI_WDMA_PERF),
-			 readl(cap->vi + VI_WDMA_STATUS0),
-			 readl(cap->vi + VI_WDMA_STATUS1),
-			 readl(cap->vi + VI_WDMA_NEXT_ADDR0),
-			 readl(cap->vi + VI_ISP_BLK_IDLE));
-		dev_dbg(cap->dev,
-			 "vip-status: lp=%#x off-mon=%#x/%#x/%#x/%#x/%#x/%#x/%#x\n",
-			 readl(cap->vip_sys + VIP_SYS_LP_STATUS),
-			 readl(cap->vip_sys + VIP_SYS_OFF_MON1),
-			 readl(cap->vip_sys + VIP_SYS_OFF_MON2),
-			 readl(cap->vip_sys + VIP_SYS_OFF_MON3),
-			 readl(cap->vip_sys + VIP_SYS_OFF_MON4),
-			 readl(cap->vip_sys + VIP_SYS_OFF_MON5),
-			 readl(cap->vip_sys + VIP_SYS_OFF_MON6),
-			 readl(cap->vip_sys + VIP_SYS_OFF_MON7));
-	}
+	sg2002_csi_enable(cap, true);
+	sg2002_vi_enable(cap, first->dma_addr);
 	return 0;
 
 err_scratch:
@@ -969,10 +811,8 @@ static void sg2002_stop_streaming(struct vb2_queue *q)
 	struct sg2002_capture *cap = vb2_get_drv_priv(q);
 
 	WRITE_ONCE(cap->streaming, false);
-	if (SG2002_STAGE_ENABLED(cap, SG2002_STAGE_BRIDGE))
-		sg2002_vi_disable(cap);
-	if (SG2002_STAGE_ENABLED(cap, SG2002_STAGE_CSI))
-		sg2002_csi_enable(cap, false);
+	sg2002_vi_disable(cap);
+	sg2002_csi_enable(cap, false);
 	synchronize_irq(cap->vi_irq);
 	synchronize_irq(cap->csi_irq);
 	v4l2_subdev_disable_streams(cap->source, cap->source_pad, BIT(0));
