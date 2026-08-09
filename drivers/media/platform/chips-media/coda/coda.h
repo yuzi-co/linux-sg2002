@@ -87,6 +87,7 @@ struct coda_devtype {
 	bool			nv21_to_nv12;
 	bool			has_coda9_bus_reset;
 	bool			has_software_reset;
+	bool			skip_code_download;
 };
 
 struct coda_aux_buf {
