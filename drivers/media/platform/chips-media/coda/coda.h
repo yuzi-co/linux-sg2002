@@ -29,6 +29,7 @@
 #define CODA_MAX_FRAMEBUFFERS	19
 #define FMO_SLICE_SAVE_BUF_SIZE	(32)
 #define CODA_PARA_BUF_SIZE	(10 * 1024)
+#define CODA980_PRODUCT_CODE	0x9800
 
 /*
  * This control allows applications to read the per-stream
@@ -52,7 +53,6 @@ enum coda_product {
 	CODA_HX4 = 0xf00a,
 	CODA_7541 = 0xf012,
 	CODA_960 = 0xf020,
-	CODA_980 = 0x9800,
 };
 
 struct coda_video_device;
@@ -63,7 +63,7 @@ struct coda_devtype {
 	/* Product implementing the register ABI used by this driver. */
 	enum coda_product	product;
 	/* Optional product value returned by the firmware query command. */
-	enum coda_product	firmware_product;
+	u16			firmware_product;
 	const struct coda_codec	*codecs;
 	unsigned int		num_codecs;
 	const struct coda_video_device **vdevs;
