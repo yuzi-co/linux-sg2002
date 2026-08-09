@@ -37,6 +37,24 @@
 			#clock-cells = <1>;
 		};
 
+		vcodec: video-codec@b030000 {
+			compatible = "sophgo,sg2002-coda980";
+			reg = <0x0b030000 0x100>, <0x0b010000 0x10000>;
+			reg-names = "vc-ctrl", "h264";
+			interrupts = <SOC_PERIPHERAL_IRQ(5) IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "h264";
+			clocks = <&clk CLK_AXI_VIDEO_CODEC>,
+				 <&clk CLK_CFG_REG_VC>,
+				 <&clk CLK_VC_SRC0>,
+				 <&clk CLK_H264C>,
+				 <&clk CLK_APB_H264C>;
+			clock-names = "axi-video-codec", "cfg-reg-vc", "vc-src0",
+				      "h264c", "apb-h264c";
+			resets = <&rst RST_H264C>;
+			firmware-name = "sophgo/sg2002/coda980.bin";
+			status = "disabled";
+		};
+
 		plic: interrupt-controller@70000000 {
 			compatible = "sophgo,sg2002-plic", "thead,c900-plic";
 			reg = <0x70000000 0x4000000>;

@@ -123,9 +123,12 @@ allOf:
         interrupt-names:
           items:
             - const: h264
+        resets:
+          maxItems: 1
       required:
         - reg-names
         - firmware-name
+        - resets
     else:
       properties:
         reg:
@@ -179,5 +182,6 @@ examples:
                  <&clk CLK_APB_H264C>;
         clock-names = "axi-video-codec", "cfg-reg-vc", "vc-src0",
                       "h264c", "apb-h264c";
+        resets = <&rst RST_H264C>;
         firmware-name = "sophgo/sg2002/coda980.bin";
     };
