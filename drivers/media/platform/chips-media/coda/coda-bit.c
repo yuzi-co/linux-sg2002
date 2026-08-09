@@ -939,6 +939,7 @@ static u32 coda_supported_firmwares[] = {
 	CODA_FIRMWARE_VERNUM(CODA_960, 2, 1, 9),
 	CODA_FIRMWARE_VERNUM(CODA_960, 2, 3, 10),
 	CODA_FIRMWARE_VERNUM(CODA_960, 3, 1, 1),
+	CODA_FIRMWARE_VERNUM(CODA980_PRODUCT_CODE, 3, 0, 1),
 };
 
 static bool coda_firmware_supported(u32 vernum)
@@ -954,7 +955,7 @@ static bool coda_firmware_supported(u32 vernum)
 int coda_check_firmware(struct coda_dev *dev)
 {
 	u16 expected_product, product, major, minor, release;
-	u32 data;
+	u32 data, vernum;
 	int ret;
 
 	ret = coda_enable_clocks(dev);
@@ -980,10 +981,14 @@ int coda_check_firmware(struct coda_dev *dev)
 
 	/* Check we are compatible with the loaded firmware */
 	data = coda_read(dev, CODA_CMD_FIRMWARE_VERNUM);
-	product = CODA_FIRMWARE_PRODUCT(data);
+	if (dev->devtype->firmware_product_reg)
+		product = coda_read(dev, dev->devtype->firmware_product_reg);
+	else
+		product = CODA_FIRMWARE_PRODUCT(data);
 	major = CODA_FIRMWARE_MAJOR(data);
 	minor = CODA_FIRMWARE_MINOR(data);
 	release = CODA_FIRMWARE_RELEASE(data);
+	vernum = CODA_FIRMWARE_VERNUM(product, major, minor, release);
 
 	coda_disable_clocks(dev);
 
@@ -999,7 +1004,7 @@ int coda_check_firmware(struct coda_dev *dev)
 	v4l2_info(&dev->v4l2_dev, "Initialized %s.\n",
 		  coda_product_name(product));
 
-	if (coda_firmware_supported(data)) {
+	if (coda_firmware_supported(vernum)) {
 		v4l2_info(&dev->v4l2_dev, "Firmware version: %u.%u.%u\n",
 			  major, minor, release);
 	} else {
