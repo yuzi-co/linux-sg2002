@@ -1526,9 +1526,6 @@ static int coda_stage_nv21(struct coda_ctx *ctx,
 		dst[luma_size + i + 1] = src[luma_size + i];
 	}
 
-	dma_sync_single_for_device(ctx->dev->dev, staging->paddr, size,
-				   DMA_TO_DEVICE);
-
 	return 0;
 }
 
