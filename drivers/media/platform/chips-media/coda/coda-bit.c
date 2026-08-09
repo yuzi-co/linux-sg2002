@@ -671,7 +671,7 @@ static int coda_encode_header(struct coda_ctx *ctx, struct vb2_v4l2_buffer *buf,
 			header_code |= CODA9_HEADER_FRAME_CROP;
 		}
 	}
-	if (dev->devtype->has_extended_h264_header &&
+	if (dev->devtype->has_coda980_h264_abi &&
 	    ctx->codec->dst_fourcc == V4L2_PIX_FMT_H264) {
 		if (header_code == CODA_HEADER_H264_SPS) {
 			u32 profile;
@@ -1080,6 +1080,16 @@ static void coda9_set_frame_cache(struct coda_ctx *ctx, u32 fourcc)
 	coda_write(ctx->dev, cache_config, CODA9_CMD_SET_FRAME_CACHE_CONFIG);
 }
 
+static void coda980_set_frame_cache(struct coda_ctx *ctx)
+{
+	/*
+	 * Coda980 has Maverick-II cache configuration at this register, unlike
+	 * Coda960's two-register Maverick-I configuration.  The factory driver
+	 * initializes it to zero for the linear encoder path.
+	 */
+	coda_write(ctx->dev, 0, CODA9_CMD_SET_FRAME_CACHE_CONFIG);
+}
+
 /*
  * Encoder context operations
  */
@@ -1300,6 +1310,12 @@ static int coda_start_encoding(struct coda_ctx *ctx)
 		value = 0;
 	}
 	coda_write(dev, value, CODA_CMD_ENC_SEQ_RC_PARA);
+	if (dev->devtype->has_coda980_h264_abi &&
+	    dst_fourcc == V4L2_PIX_FMT_H264) {
+		/* Coda980-specific RC registers are not part of the Coda960 ABI. */
+		coda_write(dev, 0, CODA9_CMD_ENC_SEQ_RC_PARA2);
+		coda_write(dev, 0, CODA9_CMD_ENC_SEQ_QP_RANGE_SET);
+	}
 
 	coda_write(dev, ctx->params.vbv_size, CODA_CMD_ENC_SEQ_RC_BUF_SIZE);
 	coda_write(dev, ctx->params.intra_refresh,
@@ -1310,7 +1326,9 @@ static int coda_start_encoding(struct coda_ctx *ctx)
 
 
 	value = 0;
-	if (dev->devtype->product == CODA_960)
+	if (dev->devtype->has_coda980_h264_abi)
+		gamma = 0;
+	else if (dev->devtype->product == CODA_960)
 		gamma = CODA9_DEFAULT_GAMMA;
 	else
 		gamma = CODA_DEFAULT_GAMMA;
@@ -1319,28 +1337,34 @@ static int coda_start_encoding(struct coda_ctx *ctx)
 			   CODA_CMD_ENC_SEQ_RC_GAMMA);
 	}
 
-	if (ctx->params.h264_min_qp || ctx->params.h264_max_qp) {
+	if (dev->devtype->has_coda980_h264_abi &&
+	    dst_fourcc == V4L2_PIX_FMT_H264) {
+		/* Coda980 uses this register as RC_QP_MAX, not a min/max pair. */
+		coda_write(dev, 0, CODA_CMD_ENC_SEQ_RC_QP_MIN_MAX);
+	} else if (ctx->params.h264_min_qp || ctx->params.h264_max_qp) {
 		coda_write(dev,
 			   ctx->params.h264_min_qp << CODA_QPMIN_OFFSET |
 			   ctx->params.h264_max_qp << CODA_QPMAX_OFFSET,
 			   CODA_CMD_ENC_SEQ_RC_QP_MIN_MAX);
 	}
-	if (dev->devtype->product == CODA_960) {
-		if (ctx->params.h264_max_qp)
-			value |= 1 << CODA9_OPTION_RCQPMAX_OFFSET;
-		if (CODA_DEFAULT_GAMMA > 0)
-			value |= 1 << CODA9_OPTION_GAMMA_OFFSET;
-	} else {
-		if (CODA_DEFAULT_GAMMA > 0) {
-			if (dev->devtype->product == CODA_DX6)
-				value |= 1 << CODADX6_OPTION_GAMMA_OFFSET;
-			else
-				value |= 1 << CODA7_OPTION_GAMMA_OFFSET;
+	if (!dev->devtype->has_coda980_h264_abi) {
+		if (dev->devtype->product == CODA_960) {
+			if (ctx->params.h264_max_qp)
+				value |= 1 << CODA9_OPTION_RCQPMAX_OFFSET;
+			if (CODA_DEFAULT_GAMMA > 0)
+				value |= 1 << CODA9_OPTION_GAMMA_OFFSET;
+		} else {
+			if (CODA_DEFAULT_GAMMA > 0) {
+				if (dev->devtype->product == CODA_DX6)
+					value |= 1 << CODADX6_OPTION_GAMMA_OFFSET;
+				else
+					value |= 1 << CODA7_OPTION_GAMMA_OFFSET;
+			}
+			if (ctx->params.h264_min_qp)
+				value |= 1 << CODA7_OPTION_RCQPMIN_OFFSET;
+			if (ctx->params.h264_max_qp)
+				value |= 1 << CODA7_OPTION_RCQPMAX_OFFSET;
 		}
-		if (ctx->params.h264_min_qp)
-			value |= 1 << CODA7_OPTION_RCQPMIN_OFFSET;
-		if (ctx->params.h264_max_qp)
-			value |= 1 << CODA7_OPTION_RCQPMAX_OFFSET;
 	}
 	coda_write(dev, value, CODA_CMD_ENC_SEQ_OPTION);
 
@@ -1366,7 +1390,12 @@ static int coda_start_encoding(struct coda_ctx *ctx)
 					CODA7_CMD_ENC_SEQ_SEARCH_SIZE);
 			break;
 		case CODA_960:
-			coda_write(dev, 0, CODA9_CMD_ENC_SEQ_ME_OPTION);
+			if (dev->devtype->has_coda980_h264_abi)
+				coda_write(dev, CODA980_ME_LINE_BUFFER_MODE <<
+					   CODA980_ME_LINE_BUFFER_MODE_SHIFT,
+					   CODA9_CMD_ENC_SEQ_ME_OPTION);
+			else
+				coda_write(dev, 0, CODA9_CMD_ENC_SEQ_ME_OPTION);
 			coda_write(dev, 0, CODA9_CMD_ENC_SEQ_INTRA_WEIGHT);
 		}
 	}
@@ -1417,20 +1446,23 @@ static int coda_start_encoding(struct coda_ctx *ctx)
 		coda_write(dev, ctx->iram_info.buf_dbk_y_use,
 				CODA7_CMD_SET_FRAME_AXI_DBKY_ADDR);
 		coda_write(dev, ctx->iram_info.buf_dbk_c_use,
-				CODA7_CMD_SET_FRAME_AXI_DBKC_ADDR);
+				   CODA7_CMD_SET_FRAME_AXI_DBKC_ADDR);
 		coda_write(dev, ctx->iram_info.buf_ovl_use,
-				CODA7_CMD_SET_FRAME_AXI_OVL_ADDR);
+				   CODA7_CMD_SET_FRAME_AXI_OVL_ADDR);
 		if (dev->devtype->product == CODA_960) {
-			coda_write(dev, ctx->iram_info.buf_btp_use,
-					CODA9_CMD_SET_FRAME_AXI_BTP_ADDR);
+			if (dev->devtype->has_coda980_h264_abi) {
+				coda980_set_frame_cache(ctx);
+			} else {
+				coda_write(dev, ctx->iram_info.buf_btp_use,
+					   CODA9_CMD_SET_FRAME_AXI_BTP_ADDR);
+				coda9_set_frame_cache(ctx, q_data_src->fourcc);
 
-			coda9_set_frame_cache(ctx, q_data_src->fourcc);
-
-			/* FIXME */
-			coda_write(dev, ctx->internal_frames[2].buf.paddr,
-				   CODA9_CMD_SET_FRAME_SUBSAMP_A);
-			coda_write(dev, ctx->internal_frames[3].buf.paddr,
-				   CODA9_CMD_SET_FRAME_SUBSAMP_B);
+				/* FIXME */
+				coda_write(dev, ctx->internal_frames[2].buf.paddr,
+					   CODA9_CMD_SET_FRAME_SUBSAMP_A);
+				coda_write(dev, ctx->internal_frames[3].buf.paddr,
+					   CODA9_CMD_SET_FRAME_SUBSAMP_B);
+			}
 		}
 	}
 
@@ -1729,6 +1761,10 @@ static int coda_prepare_encode(struct coda_ctx *ctx)
 	/* submit */
 	if (ctx->params.rot_mode)
 		rot_mode = CODA_ROT_MIR_ENABLE | ctx->params.rot_mode;
+	if (dev->devtype->has_coda980_h264_abi &&
+	    (q_data_src->fourcc == V4L2_PIX_FMT_NV12 ||
+	     q_data_src->fourcc == V4L2_PIX_FMT_NV21))
+		rot_mode |= CODA980_ENC_PIC_CBCR_INTERLEAVE;
 	coda_write(dev, rot_mode, CODA_CMD_ENC_PIC_ROT_MODE);
 	coda_write(dev, quant_param, CODA_CMD_ENC_PIC_QS);
 
