@@ -28,6 +28,7 @@
 
 #define CODA_MAX_FRAMEBUFFERS	19
 #define FMO_SLICE_SAVE_BUF_SIZE	(32)
+#define CODA_PARA_BUF_SIZE	(10 * 1024)
 
 /*
  * This control allows applications to read the per-stream
@@ -51,20 +52,41 @@ enum coda_product {
 	CODA_HX4 = 0xf00a,
 	CODA_7541 = 0xf012,
 	CODA_960 = 0xf020,
+	CODA_980 = 0x9800,
 };
 
 struct coda_video_device;
+struct clk_bulk_data;
 
 struct coda_devtype {
-	char			*firmware[3];
+	const char		*firmware[3];
+	/* Product implementing the register ABI used by this driver. */
 	enum coda_product	product;
+	/* Optional product value returned by the firmware query command. */
+	enum coda_product	firmware_product;
 	const struct coda_codec	*codecs;
 	unsigned int		num_codecs;
 	const struct coda_video_device **vdevs;
 	unsigned int		num_vdevs;
+	const char		*codec_resource;
+	const char		*sram_ctrl_resource;
+	const char		*bit_irq_name;
 	size_t			workbuf_size;
 	size_t			tempbuf_size;
+	size_t			commonbuf_size;
 	size_t			iram_size;
+	u32			tempbuf_offset;
+	u32			parabuf_offset;
+	unsigned int		max_instances;
+	unsigned int		num_clocks;
+	u32			sram_ctrl_offset;
+	u32			sram_ctrl_value;
+	bool			uses_bulk_clocks;
+	bool			requires_firmware_name;
+	bool			has_jpeg_irq;
+	bool			nv21_to_nv12;
+	bool			has_coda9_bus_reset;
+	bool			has_software_reset;
 };
 
 struct coda_aux_buf {
@@ -84,9 +106,13 @@ struct coda_dev {
 	struct vdoa_data	*vdoa;
 
 	void __iomem		*regs_base;
+	void __iomem		*sram_ctrl;
 	struct clk		*clk_per;
 	struct clk		*clk_ahb;
+	struct clk_bulk_data	*clks;
+	int			num_clks;
 	struct reset_control	*rstc;
+	const char		*firmware_name;
 
 	struct coda_aux_buf	codebuf;
 	struct coda_aux_buf	tempbuf;
@@ -271,6 +297,7 @@ struct coda_ctx {
 	int				num_metas;
 	unsigned int			first_frame_sequence;
 	struct coda_aux_buf		workbuf;
+	struct coda_aux_buf		input_staging;
 	int				num_internal_frames;
 	int				idx;
 	int				reg_idx;
@@ -304,6 +331,8 @@ extern int coda_debug;
 
 void coda_write(struct coda_dev *dev, u32 data, u32 reg);
 unsigned int coda_read(struct coda_dev *dev, u32 reg);
+int coda_enable_clocks(struct coda_dev *dev);
+void coda_disable_clocks(struct coda_dev *dev);
 void coda_write_base(struct coda_ctx *ctx, struct coda_q_data *q_data,
 		     struct vb2_v4l2_buffer *buf, unsigned int reg_y);
 
