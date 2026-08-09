@@ -134,7 +134,7 @@ int coda_hw_reset(struct coda_ctx *ctx)
 	}
 
 	if (dev->rstc) {
-		ret = reset_control_reset(dev->rstc);
+		ret = coda_reset(dev);
 		if (ret < 0)
 			return ret;
 	} else if (dev->devtype->has_software_reset) {
