@@ -1,0 +1,213 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/sophgo,sg2002-csi-capture.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Sophgo SG2002 CSI-2 capture
+
+maintainers:
+  - George Whewell <georgerw@gmail.com>
+
+description:
+  The SG2002 CSI-2 capture block combines the CSI MAC, CSI wrapper, VI
+  bridge, and VIP system control registers into one capture device. It
+  accepts one CSI-2 D-PHY input and exposes the VI DMA capture path.
+
+properties:
+  compatible:
+    const: sophgo,sg2002-csi-capture
+
+  reg:
+    items:
+      - description: CSI MAC0 registers
+      - description: CSI wrapper registers
+      - description: VI registers
+      - description: VIP system registers
+
+  reg-names:
+    items:
+      - const: csi-mac0
+      - const: csi-wrap
+      - const: vi
+      - const: vip-sys
+
+  interrupts:
+    items:
+      - description: VI capture interrupt
+      - description: CSI MAC interrupt
+
+  interrupt-names:
+    items:
+      - const: vi
+      - const: csi
+
+  clocks:
+    items:
+      - description: VIP system clock 0
+      - description: VIP system clock 1
+      - description: VIP system clock 2
+      - description: VIP system clock 3
+      - description: VIP AXI clock
+      - description: VIP register configuration clock
+      - description: VIP IP clock 0
+      - description: VIP IP clock 1
+      - description: VIP IP clock 2
+      - description: VIP IP clock 3
+      - description: CSI back-end clock
+      - description: VIP raw clock
+      - description: VIP ISP top clock
+      - description: CSI MAC0 clock
+      - description: CSI0 receiver clock
+
+  clock-names:
+    items:
+      - const: vip-sys0
+      - const: vip-sys1
+      - const: vip-sys2
+      - const: vip-sys3
+      - const: axi
+      - const: cfg-reg
+      - const: vip-ip0
+      - const: vip-ip1
+      - const: vip-ip2
+      - const: vip-ip3
+      - const: csi-be
+      - const: raw
+      - const: isp-top
+      - const: csi-mac0
+      - const: csi0-rx
+
+  resets:
+    items:
+      - description: CSI D-PHY reset
+      - description: CSI D-PHY APB reset
+
+  reset-names:
+    items:
+      - const: csi-phy
+      - const: csi-phy-apb
+
+  sophgo,ddr-top:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Phandle to the DDR top syscon.
+
+  port:
+    $ref: /schemas/graph.yaml#/$defs/port-base
+    unevaluatedProperties: false
+    description: CSI-2 D-PHY input port.
+
+    properties:
+      endpoint:
+        $ref: video-interfaces.yaml#
+        unevaluatedProperties: false
+
+        properties:
+          bus-type:
+            const: 4
+
+          clock-lanes:
+            $ref: /schemas/types.yaml#/definitions/uint32
+            maximum: 5
+
+          data-lanes:
+            minItems: 4
+            maxItems: 4
+            uniqueItems: true
+            items:
+              maximum: 5
+
+          remote-endpoint:
+            $ref: /schemas/types.yaml#/definitions/phandle
+
+    required:
+      - endpoint
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - interrupts
+  - interrupt-names
+  - clocks
+  - clock-names
+  - resets
+  - reset-names
+  - sophgo,ddr-top
+  - port
+
+additionalProperties: false
+
+examples:
+  - |
+    #define RST_CSI_PHY0 70
+    #define RST_CSI_PHY0_APB 71
+
+    / {
+        #address-cells = <1>;
+        #size-cells = <1>;
+
+        clk: clock-controller {
+            #clock-cells = <1>;
+        };
+
+        rst: reset-controller {
+            #reset-cells = <1>;
+        };
+
+        plic: interrupt-controller {
+            interrupt-controller;
+            #interrupt-cells = <1>;
+        };
+
+        ddr_top: syscon@800a000 {
+            compatible = "sophgo,sg2002-ddr-top", "syscon";
+            reg = <0x0800a000 0x1000>;
+        };
+
+        csi@a0c2000 {
+            compatible = "sophgo,sg2002-csi-capture";
+            reg = <0x0a0c2000 0x2000>,
+                  <0x0a0d0000 0x1000>,
+                  <0x0a000000 0x80000>,
+                  <0x0a0c8000 0x2000>;
+            reg-names = "csi-mac0", "csi-wrap", "vi", "vip-sys";
+            interrupt-parent = <&plic>;
+            interrupts = <12>, <13>;
+            interrupt-names = "vi", "csi";
+            clocks = <&clk 100>, <&clk 101>, <&clk 102>, <&clk 103>,
+                     <&clk 99>, <&clk 128>, <&clk 129>, <&clk 130>,
+                     <&clk 131>, <&clk 132>, <&clk 105>, <&clk 134>,
+                     <&clk 111>, <&clk 106>, <&clk 109>;
+            clock-names = "vip-sys0", "vip-sys1", "vip-sys2", "vip-sys3",
+                          "axi", "cfg-reg", "vip-ip0", "vip-ip1",
+                          "vip-ip2", "vip-ip3", "csi-be", "raw",
+                          "isp-top", "csi-mac0", "csi0-rx";
+            resets = <&rst RST_CSI_PHY0>, <&rst RST_CSI_PHY0_APB>;
+            reset-names = "csi-phy", "csi-phy-apb";
+            sophgo,ddr-top = <&ddr_top>;
+
+            port {
+                csi_in: endpoint {
+                    remote-endpoint = <&camera_out>;
+                    bus-type = <4>;
+                    clock-lanes = <2>;
+                    data-lanes = <4 3 1 0>;
+                };
+            };
+        };
+
+        camera@0 {
+            compatible = "v4l2-clockless-camera";
+            reg = <0 0>;
+
+            port {
+                camera_out: endpoint {
+                    remote-endpoint = <&csi_in>;
+                    bus-type = <4>;
+                    clock-lanes = <2>;
+                    data-lanes = <4 3 1 0>;
+                };
+            };
+        };
+    };
