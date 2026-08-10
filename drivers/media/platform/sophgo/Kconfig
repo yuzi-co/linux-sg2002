@@ -16,3 +16,15 @@ config VIDEO_SOPHGO_SG2002_CSI
 	  the Sophgo SG2002/CV181x video subsystem. The initial implementation
 	  supports one four-lane YUV422 input on CSI MAC0 and exposes it as a
 	  V4L2 capture device.
+
+config VIDEO_SOPHGO_SG2002_VPSS
+	tristate "Sophgo SG2002 VPSS scaler/CSC mem2mem"
+	depends on V4L_MEM2MEM_DRIVERS
+	depends on VIDEO_DEV
+	depends on OF
+	depends on ARCH_SOPHGO || COMPILE_TEST
+	select VIDEOBUF2_DMA_CONTIG
+	select V4L2_MEM2MEM_DEV
+	help
+	  Support the VIP scaler/CSC block ("VPSS") in the Sophgo SG2002/CV181x
+	  video subsystem as a memory-to-memory device: packed or semiplanar
