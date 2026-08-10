@@ -22,6 +22,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
+#include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
@@ -3441,6 +3442,12 @@ static int coda_probe(struct platform_device *pdev)
 		return -ENODEV;
 
 	dev->dev = &pdev->dev;
+
+	ret = of_reserved_mem_device_init(&pdev->dev);
+	if (ret && ret != -ENODEV)
+		dev_warn(&pdev->dev, "failed to initialize reserved memory: %d\n",
+			 ret);
+
 	if (dev->devtype->requires_firmware_name) {
 		ret = of_property_read_string(np, "firmware-name", &firmware_name);
 		if (ret) {
@@ -3628,6 +3635,8 @@ static void coda_remove(struct platform_device *pdev)
 {
 	struct coda_dev *dev = platform_get_drvdata(pdev);
 	int i;
+
+	of_reserved_mem_device_release(&pdev->dev);
 
 	for (i = 0; i < ARRAY_SIZE(dev->vfd); i++) {
 		if (video_get_drvdata(&dev->vfd[i]))
