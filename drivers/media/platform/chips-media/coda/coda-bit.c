@@ -1420,7 +1420,10 @@ static int coda_start_encoding(struct coda_ctx *ctx)
 	ctx->initialized = 1;
 
 	if (dst_fourcc != V4L2_PIX_FMT_JPEG) {
-		if (dev->devtype->product == CODA_960)
+		/* Coda980 uses two reconstruction buffers: current and reference. */
+		if (dev->devtype->has_coda980_h264_abi)
+			ctx->num_internal_frames = 2;
+		else if (dev->devtype->product == CODA_960)
 			ctx->num_internal_frames = 4;
 		else
 			ctx->num_internal_frames = 2;
