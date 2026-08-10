@@ -26,6 +26,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
+#include <linux/of_reserved_mem.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -934,6 +935,11 @@ static int vpss_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_m2m;
 
+	ret = of_reserved_mem_device_init(&pdev->dev);
+	if (ret && ret != -ENODEV)
+		dev_warn(&pdev->dev, "failed to initialize reserved memory: %d\n",
+			 ret);
+
 	pm_runtime_enable(&pdev->dev);
 
 	dev_info(&pdev->dev, "registered as /dev/video%d\n", vfd->num);
@@ -949,6 +955,8 @@ err_v4l2:
 static void vpss_remove(struct platform_device *pdev)
 {
 	struct vpss_dev *vpss = platform_get_drvdata(pdev);
+
+	of_reserved_mem_device_release(&pdev->dev);
 
 	pm_runtime_disable(&pdev->dev);
 	video_unregister_device(&vpss->vfd);
