@@ -17,6 +17,7 @@
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/reset.h>
@@ -1315,6 +1316,11 @@ static int sg2002_probe(struct platform_device *pdev)
 	if (!cap)
 		return -ENOMEM;
 
+	ret = of_reserved_mem_device_init(&pdev->dev);
+	if (ret && ret != -ENODEV)
+		dev_warn(&pdev->dev, "failed to initialize reserved memory: %d\n",
+			 ret);
+
 	cap->dev = &pdev->dev;
 	platform_set_drvdata(pdev, cap);
 
@@ -1396,6 +1402,8 @@ err_endpoint_put:
 static void sg2002_remove(struct platform_device *pdev)
 {
 	struct sg2002_capture *cap = platform_get_drvdata(pdev);
+
+	of_reserved_mem_device_release(&pdev->dev);
 
 	mutex_lock(&cap->lock);
 	cap->removing = true;
