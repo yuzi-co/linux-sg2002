@@ -37,6 +37,20 @@
 			#clock-cells = <1>;
 		};
 
+
+		vpss: vpss@a080000 {
+			compatible = "sophgo,sg2002-vpss";
+			reg = <0x0a080000 0x10000>;
+			interrupts = <SOC_PERIPHERAL_IRQ(9) IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&clk CLK_SRC_VIP_SYS_0>,
+				 <&clk CLK_SRC_VIP_SYS_1>,
+				 <&clk CLK_SRC_VIP_SYS_2>,
+				 <&clk CLK_IMG_V_VIP>,
+				 <&clk CLK_SC_TOP_VIP>,
+				 <&clk CLK_SC_V1_VIP>;
+			clock-names = "sys0", "sys1", "sys2", "img_v", "sc_top", "sc_v1";
+			status = "disabled";
+		};
 		vcodec: video-codec@b030000 {
 			compatible = "sophgo,sg2002-coda980";
 			reg = <0x0b030000 0x100>, <0x0b010000 0x10000>;
