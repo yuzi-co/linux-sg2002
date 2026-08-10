@@ -1,0 +1,71 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/sophgo,sg2002-vpss.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Sophgo SG2002 VPSS scaler/CSC
+
+maintainers:
+  - George Whewell <georgerw@gmail.com>
+
+description:
+  The SG2002/CV181x video subsystem contains a scaler/CSC block ("VPSS")
+  with two DRAM input DMA engines and four scaler cores, each with an
+  output CSC and output DMA. This binding covers the memory-to-memory
+  use of the IMG_IN_V engine with the SC_V1 scaler core.
+
+properties:
+  compatible:
+    const: sophgo,sg2002-vpss
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    items:
+      - description: VIP sys 0 mux
+      - description: VIP sys 1 mux
+      - description: VIP sys 2 mux
+      - description: IMG_IN_V gate
+      - description: SC_TOP gate
+      - description: SC_V1 gate
+
+  clock-names:
+    items:
+      - const: sys0
+      - const: sys1
+      - const: sys2
+      - const: img_v
+      - const: sc_top
+      - const: sc_v1
+
+  memory-region:
+    maxItems: 1
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - clock-names
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/sophgo,cv1800.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    vpss@a080000 {
+        compatible = "sophgo,sg2002-vpss";
+        reg = <0x0a080000 0x10000>;
+        interrupts = <25 IRQ_TYPE_LEVEL_HIGH>;
+        clocks = <&clk CLK_SRC_VIP_SYS_0>, <&clk CLK_SRC_VIP_SYS_1>,
+                 <&clk CLK_SRC_VIP_SYS_2>, <&clk CLK_IMG_V_VIP>,
+                 <&clk CLK_SC_TOP_VIP>, <&clk CLK_SC_V1_VIP>;
+        clock-names = "sys0", "sys1", "sys2", "img_v", "sc_top", "sc_v1";
+    };
