@@ -894,7 +894,8 @@ static int coda_s_fmt(struct coda_ctx *ctx, struct v4l2_format *f,
 		break;
 	case V4L2_PIX_FMT_NV12:
 		if (!disable_tiling && ctx->use_bit &&
-		    ctx->dev->devtype->product == CODA_960) {
+		    ctx->dev->devtype->product == CODA_960 &&
+		    !ctx->dev->devtype->has_coda980_h264_abi) {
 			ctx->tiled_map_type = GDI_TILED_FRAME_MB_RASTER_MAP;
 			break;
 		}
