@@ -156,6 +156,12 @@ struct vpss_dev {
 	int			irq;
 	struct clk_bulk_data	*clks;
 	int			num_clks;
+	/* VIP fabric clocks, optional in the DT.  The CSI capture driver
+	 * owns these and gates them when it stops streaming; a VPSS
+	 * register write with the fabric clock off stalls the bus
+	 * silently (single-core store wedge, watchdog reset). */
+	struct clk		*clk_axi;
+	struct clk		*clk_cfg_reg;
 
 	struct mutex		lock;		/* serialises vb2 + job state */
 	spinlock_t		irq_lock;	/* guards the in-flight job */
@@ -935,6 +941,9 @@ static int vpss_runtime_resume(struct device *dev)
 	struct vpss_dev *vpss = dev_get_drvdata(dev);
 	int ret;
 
+	clk_prepare_enable(vpss->clk_axi);
+	clk_prepare_enable(vpss->clk_cfg_reg);
+
 	ret = clk_bulk_prepare_enable(vpss->num_clks, vpss->clks);
 	if (ret)
 		return ret;
@@ -948,6 +957,8 @@ static int vpss_runtime_suspend(struct device *dev)
 	struct vpss_dev *vpss = dev_get_drvdata(dev);
 
 	clk_bulk_disable_unprepare(vpss->num_clks, vpss->clks);
+	clk_disable_unprepare(vpss->clk_cfg_reg);
+	clk_disable_unprepare(vpss->clk_axi);
 	return 0;
 }
 
@@ -998,6 +1009,13 @@ static int vpss_probe(struct platform_device *pdev)
 	ret = devm_clk_bulk_get(&pdev->dev, vpss->num_clks, vpss->clks);
 	if (ret)
 		return ret;
+
+	vpss->clk_axi = devm_clk_get_optional(&pdev->dev, "axi");
+	if (IS_ERR(vpss->clk_axi))
+		return PTR_ERR(vpss->clk_axi);
+	vpss->clk_cfg_reg = devm_clk_get_optional(&pdev->dev, "cfg_reg");
+	if (IS_ERR(vpss->clk_cfg_reg))
+		return PTR_ERR(vpss->clk_cfg_reg);
 
 	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(40));
 	if (ret)
