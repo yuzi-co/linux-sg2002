@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Minimal SG2002 CSI-2 YUV capture driver
+ * Minimal SG2002 CSI-2 capture driver
  *
  * This is deliberately a narrow bring-up driver for the NanoKVM capture
- * path: one CSI-2 D-PHY input, four lanes, UYVY 1920x1080, and the VI FE0
- * CSI bridge DMA engine. The register programming is derived from the
- * vendor cif and vi drivers.
+ * path: one CSI-2 D-PHY input, one to four lanes, and the VI FE0 CSI
+ * bridge DMA engine. The frame geometry is adopted from the bound
+ * source: the NanoKVM's LT6911UXE HDMI bridge (UYVY 1920x1080) or a RAW
+ * Bayer sensor such as the LicheeRV Nano's GC4653 (SRGGB10 2560x1440,
+ * packed 4 px / 5 B by the bridge DMA). The register programming is
+ * derived from the vendor cif and vi drivers.
  */
 
 #include <linux/bitfield.h>
@@ -233,6 +236,17 @@ struct sg2002_capture {
 	dma_addr_t scratch_dma;
 
 	struct v4l2_mbus_config_mipi_csi2 bus;
+
+	/* Active frame geometry. Defaults are the proven NanoKVM HDMI path
+	 * (LT6911UXE -> UYVY 1920x1080); a bound RAW Bayer source switches
+	 * these to the sensor's mode (see sg2002_adopt_source_format). */
+	u32 pixelformat;
+	u32 mbus_code;
+	u32 width;
+	u32 height;
+	u32 bytesperline;
+	u32 sizeimage;
+	bool yuv_input;
 };
 
 static inline struct sg2002_buffer *to_sg2002_buffer(struct vb2_buffer *vb)
@@ -240,6 +254,67 @@ static inline struct sg2002_buffer *to_sg2002_buffer(struct vb2_buffer *vb)
 	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
 
 	return container_of(vbuf, struct sg2002_buffer, vb);
+}
+
+static void sg2002_set_hdmi_defaults(struct sg2002_capture *cap)
+{
+	cap->pixelformat = V4L2_PIX_FMT_UYVY;
+	cap->mbus_code = MEDIA_BUS_FMT_UYVY8_1X16;
+	cap->width = SG2002_WIDTH;
+	cap->height = SG2002_HEIGHT;
+	cap->bytesperline = SG2002_BYTES_PER_LINE;
+	cap->sizeimage = SG2002_SIZE_IMAGE;
+	cap->yuv_input = true;
+}
+
+static u32 sg2002_raw10_pixelformat(u32 code)
+{
+	switch (code) {
+	case MEDIA_BUS_FMT_SRGGB10_1X10:
+		return V4L2_PIX_FMT_SRGGB10P;
+	case MEDIA_BUS_FMT_SGRBG10_1X10:
+		return V4L2_PIX_FMT_SGRBG10P;
+	case MEDIA_BUS_FMT_SGBRG10_1X10:
+		return V4L2_PIX_FMT_SGBRG10P;
+	case MEDIA_BUS_FMT_SBGGR10_1X10:
+		return V4L2_PIX_FMT_SBGGR10P;
+	default:
+		return 0;
+	}
+}
+
+/*
+ * Adopt a bound RAW Bayer source's geometry. Only the four RAW10 orders
+ * switch the driver off the HDMI defaults; anything else (or a failed
+ * get_fmt) keeps the proven LT6911UXE behaviour byte-for-byte. The VI
+ * bridge DMA moves the CSI-2 payload verbatim, so RAW10 leaves the
+ * sensor packed four-pixels-per-five-bytes.
+ */
+static void sg2002_adopt_source_format(struct sg2002_capture *cap)
+{
+	struct v4l2_subdev_format fmt = {
+		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+		.pad = cap->source_pad,
+	};
+	u32 pixelformat;
+
+	if (v4l2_subdev_call(cap->source, pad, get_fmt, NULL, &fmt))
+		return;
+
+	pixelformat = sg2002_raw10_pixelformat(fmt.format.code);
+	if (!pixelformat)
+		return;
+
+	cap->pixelformat = pixelformat;
+	cap->mbus_code = fmt.format.code;
+	cap->width = fmt.format.width;
+	cap->height = fmt.format.height;
+	cap->bytesperline = ALIGN(cap->width * 10 / 8, 16);
+	cap->sizeimage = cap->bytesperline * cap->height;
+	cap->yuv_input = false;
+	dev_info(cap->dev, "RAW source %ux%u code %#x -> %p4cc, %u B/line\n",
+		 cap->width, cap->height, cap->mbus_code,
+		 &cap->pixelformat, cap->bytesperline);
 }
 
 static void sg2002_update_bits(void __iomem *base, u32 reg, u32 mask, u32 val)
@@ -409,7 +484,7 @@ static void sg2002_configure_lanes(struct sg2002_capture *cap)
 	u32 route;
 	unsigned int i;
 
-	for (i = 0; i < SG2002_NUM_DATA_LANES; i++) {
+	for (i = 0; i < bus->num_data_lanes; i++) {
 		data_sel |= (u32)bus->data_lanes[i] << (i * 4);
 		if (bus->lane_polarities[i + 1])
 			swaps |= BIT(8 + i);
@@ -438,7 +513,7 @@ static void sg2002_configure_lanes(struct sg2002_capture *cap)
 		if (i == bus->clock_lane) {
 			phase = 0x00;
 		} else {
-			for (j = 0; j < SG2002_NUM_DATA_LANES; j++) {
+			for (j = 0; j < bus->num_data_lanes; j++) {
 				if (i != bus->data_lanes[j])
 					continue;
 				phase = (i < 3) == (bus->clock_lane < 3) ?
@@ -495,7 +570,7 @@ static void sg2002_csi_enable(struct sg2002_capture *cap, bool enable)
 
 	sg2002_update_bits(cap->mac, MAC_CSI_CTRL, MAC_CSI_LANE_MODE,
 			    FIELD_PREP(MAC_CSI_LANE_MODE,
-				       SG2002_NUM_DATA_LANES - 1));
+				       cap->bus.num_data_lanes - 1));
 	writel(0x3210, cap->mac + MAC_CSI_VC_MAP);
 	sg2002_update_bits(cap->mac, MAC_CSI_VGEN, MAC_CSI_VGEN_MODE, 0);
 	sg2002_update_bits(cap->wrap, WRAP_TOP_POWER, WRAP_TOP_PD_IBIAS, 0);
@@ -553,16 +628,18 @@ static void sg2002_vi_enable(struct sg2002_capture *cap, dma_addr_t addr)
 	writel(~0U, cap->vi + VI_ISP_INT_EVENT0);
 	writel(~0U, cap->vi + VI_ISP_INT_EVENT1);
 	writel(~0U, cap->vi + VI_ISP_INT_EVENT2);
-	ctrl = FIELD_PREP(VI_CSIBDG_CSI_MODE, 1) | VI_CSIBDG_YUV_INPUT;
-	writel(SG2002_BYTES_PER_LINE, cap->vi + VI_DMA_SEG_LEN);
-	writel(SG2002_BYTES_PER_LINE, cap->vi + VI_DMA_STRIDE);
-	writel(SG2002_HEIGHT, cap->vi + VI_DMA_SEG_NUM);
+	ctrl = FIELD_PREP(VI_CSIBDG_CSI_MODE, 1);
+	if (cap->yuv_input)
+		ctrl |= VI_CSIBDG_YUV_INPUT;
+	writel(cap->bytesperline, cap->vi + VI_DMA_SEG_LEN);
+	writel(cap->bytesperline, cap->vi + VI_DMA_STRIDE);
+	writel(cap->height, cap->vi + VI_DMA_SEG_NUM);
 	sg2002_dma_set_addr(cap, addr);
 	ctrl |= VI_CSIBDG_CH0_DMA;
 	writel(ctrl, cap->vi + VI_CSIBDG_TOP_CTRL);
 	writel(0, cap->vi + VI_CSIBDG_INT_CTRL);
-	writel(FIELD_PREP(VI_CSIBDG_WIDTH, SG2002_WIDTH - 1) |
-	       FIELD_PREP(VI_CSIBDG_HEIGHT, SG2002_HEIGHT - 1),
+	writel(FIELD_PREP(VI_CSIBDG_WIDTH, cap->width - 1) |
+	       FIELD_PREP(VI_CSIBDG_HEIGHT, cap->height - 1),
 	       cap->vi + VI_CSIBDG_CH0_SIZE);
 
 	sg2002_preraw_fe0_trigger(cap);
@@ -664,7 +741,7 @@ static void sg2002_stop_capture(struct sg2002_capture *cap,
 
 	sg2002_return_buffers(cap, state);
 	if (cap->scratch)
-		dma_free_coherent(cap->dev, SG2002_SIZE_IMAGE, cap->scratch,
+		dma_free_coherent(cap->dev, cap->sizeimage, cap->scratch,
 				  cap->scratch_dma);
 	cap->scratch = NULL;
 	if (cap->clocks_enabled) {
@@ -800,23 +877,26 @@ static int sg2002_queue_setup(struct vb2_queue *q, unsigned int *num_buffers,
 			      unsigned int *num_planes, unsigned int sizes[],
 			      struct device *alloc_devs[])
 {
+	struct sg2002_capture *cap = vb2_get_drv_priv(q);
+
 	if (*num_planes)
-		return sizes[0] < SG2002_SIZE_IMAGE ? -EINVAL : 0;
+		return sizes[0] < cap->sizeimage ? -EINVAL : 0;
 
 	*num_planes = 1;
-	sizes[0] = SG2002_SIZE_IMAGE;
+	sizes[0] = cap->sizeimage;
 	return 0;
 }
 
 static int sg2002_buf_prepare(struct vb2_buffer *vb)
 {
+	struct sg2002_capture *cap = vb2_get_drv_priv(vb->vb2_queue);
 	struct sg2002_buffer *buf = to_sg2002_buffer(vb);
 
-	if (vb2_plane_size(vb, 0) < SG2002_SIZE_IMAGE)
+	if (vb2_plane_size(vb, 0) < cap->sizeimage)
 		return -EINVAL;
 
 	buf->dma_addr = vb2_dma_contig_plane_dma_addr(vb, 0);
-	vb2_set_plane_payload(vb, 0, SG2002_SIZE_IMAGE);
+	vb2_set_plane_payload(vb, 0, cap->sizeimage);
 	return 0;
 }
 
@@ -887,7 +967,7 @@ static int sg2002_start_streaming(struct vb2_queue *q, unsigned int count)
 		goto err_stop;
 	sg2002_vip_init(cap);
 
-	cap->scratch = dma_alloc_coherent(cap->dev, SG2002_SIZE_IMAGE,
+	cap->scratch = dma_alloc_coherent(cap->dev, cap->sizeimage,
 					  &cap->scratch_dma, GFP_KERNEL);
 	if (!cap->scratch) {
 		ret = -ENOMEM;
@@ -936,18 +1016,26 @@ static const struct vb2_ops sg2002_vb2_ops = {
 	.stop_streaming = sg2002_stop_streaming,
 };
 
-static void sg2002_fill_pix_format(struct v4l2_pix_format *pix)
+static void sg2002_fill_pix_format(struct sg2002_capture *cap,
+				   struct v4l2_pix_format *pix)
 {
-	pix->width = SG2002_WIDTH;
-	pix->height = SG2002_HEIGHT;
-	pix->pixelformat = V4L2_PIX_FMT_UYVY;
+	pix->width = cap->width;
+	pix->height = cap->height;
+	pix->pixelformat = cap->pixelformat;
 	pix->field = V4L2_FIELD_NONE;
-	pix->bytesperline = SG2002_BYTES_PER_LINE;
-	pix->sizeimage = SG2002_SIZE_IMAGE;
-	pix->colorspace = V4L2_COLORSPACE_REC709;
-	pix->ycbcr_enc = V4L2_YCBCR_ENC_709;
-	pix->quantization = V4L2_QUANTIZATION_LIM_RANGE;
-	pix->xfer_func = V4L2_XFER_FUNC_709;
+	pix->bytesperline = cap->bytesperline;
+	pix->sizeimage = cap->sizeimage;
+	if (cap->yuv_input) {
+		pix->colorspace = V4L2_COLORSPACE_REC709;
+		pix->ycbcr_enc = V4L2_YCBCR_ENC_709;
+		pix->quantization = V4L2_QUANTIZATION_LIM_RANGE;
+		pix->xfer_func = V4L2_XFER_FUNC_709;
+	} else {
+		pix->colorspace = V4L2_COLORSPACE_RAW;
+		pix->ycbcr_enc = V4L2_YCBCR_ENC_DEFAULT;
+		pix->quantization = V4L2_QUANTIZATION_FULL_RANGE;
+		pix->xfer_func = V4L2_XFER_FUNC_NONE;
+	}
 }
 
 static int sg2002_querycap(struct file *file, void *priv,
@@ -961,23 +1049,29 @@ static int sg2002_querycap(struct file *file, void *priv,
 static int sg2002_enum_fmt(struct file *file, void *priv,
 			   struct v4l2_fmtdesc *fmt)
 {
+	struct sg2002_capture *cap = video_drvdata(file);
+
 	if (fmt->index)
 		return -EINVAL;
 
-	fmt->pixelformat = V4L2_PIX_FMT_UYVY;
+	fmt->pixelformat = cap->pixelformat;
 	return 0;
 }
 
 static int sg2002_g_fmt(struct file *file, void *priv, struct v4l2_format *fmt)
 {
-	sg2002_fill_pix_format(&fmt->fmt.pix);
+	struct sg2002_capture *cap = video_drvdata(file);
+
+	sg2002_fill_pix_format(cap, &fmt->fmt.pix);
 	return 0;
 }
 
 static int sg2002_try_fmt(struct file *file, void *priv,
 			  struct v4l2_format *fmt)
 {
-	sg2002_fill_pix_format(&fmt->fmt.pix);
+	struct sg2002_capture *cap = video_drvdata(file);
+
+	sg2002_fill_pix_format(cap, &fmt->fmt.pix);
 	return 0;
 }
 
@@ -1003,12 +1097,14 @@ static int sg2002_subscribe_event(struct v4l2_fh *fh,
 static int sg2002_enum_framesizes(struct file *file, void *priv,
 				  struct v4l2_frmsizeenum *fsize)
 {
-	if (fsize->index || fsize->pixel_format != V4L2_PIX_FMT_UYVY)
+	struct sg2002_capture *cap = video_drvdata(file);
+
+	if (fsize->index || fsize->pixel_format != cap->pixelformat)
 		return -EINVAL;
 
 	fsize->type = V4L2_FRMSIZE_TYPE_DISCRETE;
-	fsize->discrete.width = SG2002_WIDTH;
-	fsize->discrete.height = SG2002_HEIGHT;
+	fsize->discrete.width = cap->width;
+	fsize->discrete.height = cap->height;
 	return 0;
 }
 
@@ -1061,9 +1157,9 @@ static int sg2002_link_validate(struct media_link *link)
 	if (ret)
 		return ret;
 
-	if (source_fmt.format.width == SG2002_WIDTH &&
-	    source_fmt.format.height == SG2002_HEIGHT &&
-	    source_fmt.format.code == MEDIA_BUS_FMT_UYVY8_1X16 &&
+	if (source_fmt.format.width == cap->width &&
+	    source_fmt.format.height == cap->height &&
+	    source_fmt.format.code == cap->mbus_code &&
 	    source_fmt.format.field == V4L2_FIELD_NONE)
 		return 0;
 
@@ -1130,6 +1226,7 @@ static int sg2002_notify_bound(struct v4l2_async_notifier *notifier,
 	mutex_lock(&cap->lock);
 	cap->source = subdev;
 	cap->source_pad = source->index;
+	sg2002_adopt_source_format(cap);
 	mutex_unlock(&cap->lock);
 	dev_info(cap->dev, "bound source %s pad %u\n", subdev->name,
 		 cap->source_pad);
@@ -1188,14 +1285,15 @@ static int sg2002_parse_endpoint(struct sg2002_capture *cap,
 		return ret;
 
 	if (ep.bus_type != V4L2_MBUS_CSI2_DPHY ||
-	    ep.bus.mipi_csi2.num_data_lanes != SG2002_NUM_DATA_LANES)
+	    !ep.bus.mipi_csi2.num_data_lanes ||
+	    ep.bus.mipi_csi2.num_data_lanes > SG2002_NUM_DATA_LANES)
 		return -EINVAL;
 
 	if (ep.bus.mipi_csi2.clock_lane >= SG2002_NUM_PHYS_LANES)
 		return -EINVAL;
 	used[ep.bus.mipi_csi2.clock_lane] = true;
 
-	for (i = 0; i < SG2002_NUM_DATA_LANES; i++) {
+	for (i = 0; i < ep.bus.mipi_csi2.num_data_lanes; i++) {
 		unsigned int lane = ep.bus.mipi_csi2.data_lanes[i];
 
 		if (lane >= SG2002_NUM_PHYS_LANES || used[lane])
@@ -1323,6 +1421,7 @@ static int sg2002_probe(struct platform_device *pdev)
 
 	cap->dev = &pdev->dev;
 	platform_set_drvdata(pdev, cap);
+	sg2002_set_hdmi_defaults(cap);
 
 	cap->mac = devm_platform_ioremap_resource_byname(pdev, "csi-mac0");
 	if (IS_ERR(cap->mac))
