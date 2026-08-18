@@ -3636,8 +3636,6 @@ static void coda_remove(struct platform_device *pdev)
 	struct coda_dev *dev = platform_get_drvdata(pdev);
 	int i;
 
-	of_reserved_mem_device_release(&pdev->dev);
-
 	for (i = 0; i < ARRAY_SIZE(dev->vfd); i++) {
 		if (video_get_drvdata(&dev->vfd[i]))
 			video_unregister_device(&dev->vfd[i]);
@@ -3649,6 +3647,9 @@ static void coda_remove(struct platform_device *pdev)
 	destroy_workqueue(dev->workqueue);
 	coda_free_device_buffers(dev);
 	ida_destroy(&dev->ida);
+
+	/* only after every coherent/vb2 user of the rmem dma_ops is gone */
+	of_reserved_mem_device_release(&pdev->dev);
 }
 
 #ifdef CONFIG_PM
