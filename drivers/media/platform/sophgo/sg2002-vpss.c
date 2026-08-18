@@ -170,6 +170,12 @@ struct vpss_ctx {
 	struct v4l2_fh		fh;
 	struct vpss_dev		*dev;
 	struct vpss_q_data	q_data[2];	/* [OUTPUT]=src, [CAPTURE]=dst */
+	/* CAPTURE-side crop: the visible image inside the (possibly
+	 * macroblock-padded) CAPTURE surface.  The scaler produces the
+	 * crop geometry; the format geometry only sets the plane layout
+	 * (pitches, chroma offset), which lets a consumer such as the
+	 * Coda980 encoder import the buffer without a padding pass. */
+	struct v4l2_rect	crop;
 };
 
 static const s16 vpss_bicubic_coef[128][4] = {
@@ -307,7 +313,7 @@ static void vpss_job_hw(struct vpss_dev *vpss, struct vpss_ctx *ctx,
 	struct vpss_q_data *q_in = &ctx->q_data[V4L2_BUF_TYPE_VIDEO_OUTPUT];
 	struct vpss_q_data *q_out = &ctx->q_data[V4L2_BUF_TYPE_VIDEO_CAPTURE];
 	u32 sw = q_in->width, sh = q_in->height;
-	u32 dw = q_out->width, dh = q_out->height;
+	u32 dw = ctx->crop.width, dh = ctx->crop.height;
 	u32 ratio;
 	bool scale = (sw != dw) || (sh != dh);
 
@@ -365,7 +371,8 @@ static void vpss_job_hw(struct vpss_dev *vpss, struct vpss_ctx *ctx,
 	vpss_write(vpss, ODMA_PITCH_Y, q_out->bytesperline);
 	vpss_write(vpss, ODMA_PITCH_C, dw);
 	vpss_set_addr(vpss, ODMA_ADDR0_L, dst);
-	vpss_set_addr(vpss, ODMA_ADDR1_L, dst + (u64)q_out->bytesperline * dh);
+	vpss_set_addr(vpss, ODMA_ADDR1_L,
+		      dst + (u64)q_out->bytesperline * q_out->height);
 	vpss_set_addr(vpss, ODMA_ADDR2_L, 0);
 
 	/* enable SC_V1 (+ debug, QoS), then commit the shadow banks */
@@ -510,6 +517,59 @@ static int vpss_s_fmt(struct file *file, void *priv, struct v4l2_format *f)
 	q_data->height = f->fmt.pix.height;
 	q_data->bytesperline = f->fmt.pix.bytesperline;
 	q_data->sizeimage = f->fmt.pix.sizeimage;
+	if (f->type == V4L2_BUF_TYPE_VIDEO_CAPTURE) {
+		ctx->crop.left = 0;
+		ctx->crop.top = 0;
+		ctx->crop.width = q_data->width;
+		ctx->crop.height = q_data->height;
+	}
+	return 0;
+}
+
+static int vpss_g_selection(struct file *file, void *priv,
+			    struct v4l2_selection *s)
+{
+	struct vpss_ctx *ctx = file->private_data;
+	struct vpss_q_data *q_out = &ctx->q_data[V4L2_BUF_TYPE_VIDEO_CAPTURE];
+
+	if (s->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
+		return -EINVAL;
+	switch (s->target) {
+	case V4L2_SEL_TGT_CROP:
+		s->r = ctx->crop;
+		break;
+	case V4L2_SEL_TGT_CROP_DEFAULT:
+	case V4L2_SEL_TGT_CROP_BOUNDS:
+		s->r.left = 0;
+		s->r.top = 0;
+		s->r.width = q_out->width;
+		s->r.height = q_out->height;
+		break;
+	default:
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static int vpss_s_selection(struct file *file, void *priv,
+			    struct v4l2_selection *s)
+{
+	struct vpss_ctx *ctx = file->private_data;
+	struct vpss_q_data *q_out = &ctx->q_data[V4L2_BUF_TYPE_VIDEO_CAPTURE];
+	struct v4l2_rect r = s->r;
+
+	if (s->type != V4L2_BUF_TYPE_VIDEO_CAPTURE ||
+	    s->target != V4L2_SEL_TGT_CROP)
+		return -EINVAL;
+	/* the visible image always starts at the surface origin */
+	r.left = 0;
+	r.top = 0;
+	r.width = clamp_t(u32, round_down(r.width, 2), VPSS_MIN_DIM,
+			  q_out->width);
+	r.height = clamp_t(u32, round_down(r.height, 2), VPSS_MIN_DIM,
+			   q_out->height);
+	ctx->crop = r;
+	s->r = r;
 	return 0;
 }
 
@@ -659,11 +719,14 @@ static void vpss_device_run(void *priv)
 		return;
 
 	/* 1:1 or downscale by at most VPSS_MAX_RATIO in each dimension */
-	if (q_out->width > q_in->width || q_out->height > q_in->height ||
-	    q_out->width * VPSS_MAX_RATIO < q_in->width ||
-	    q_out->height * VPSS_MAX_RATIO < q_in->height) {
+	if (!ctx->crop.width || !ctx->crop.height ||
+	    ctx->crop.width > q_in->width || ctx->crop.height > q_in->height ||
+	    ctx->crop.width * VPSS_MAX_RATIO < q_in->width ||
+	    ctx->crop.height * VPSS_MAX_RATIO < q_in->height ||
+	    ctx->crop.width > q_out->width || ctx->crop.height > q_out->height) {
 		dev_err(vpss->dev, "rejecting %ux%u -> %ux%u conversion\n",
-			q_in->width, q_in->height, q_out->width, q_out->height);
+			q_in->width, q_in->height,
+			ctx->crop.width, ctx->crop.height);
 		src = v4l2_m2m_src_buf_remove(ctx->fh.m2m_ctx);
 		dst = v4l2_m2m_dst_buf_remove(ctx->fh.m2m_ctx);
 		v4l2_m2m_buf_done(src, VB2_BUF_STATE_ERROR);
@@ -773,6 +836,8 @@ static int vpss_open(struct file *file)
 	q_out->height = 1080;
 	q_out->bytesperline = 1920;
 	q_out->sizeimage = 1920 * 1080 * 3 / 2;
+	ctx->crop.width = 1920;
+	ctx->crop.height = 1080;
 
 	return 0;
 
@@ -823,6 +888,8 @@ static const struct v4l2_ioctl_ops vpss_ioctl_ops = {
 	.vidioc_try_fmt_vid_cap		= vpss_try_fmt,
 	.vidioc_s_fmt_vid_out		= vpss_s_fmt,
 	.vidioc_s_fmt_vid_cap		= vpss_s_fmt,
+	.vidioc_g_selection		= vpss_g_selection,
+	.vidioc_s_selection		= vpss_s_selection,
 	.vidioc_reqbufs			= v4l2_m2m_ioctl_reqbufs,
 	.vidioc_querybuf		= v4l2_m2m_ioctl_querybuf,
 	.vidioc_qbuf			= v4l2_m2m_ioctl_qbuf,
