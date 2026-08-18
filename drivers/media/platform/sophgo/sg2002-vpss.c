@@ -164,6 +164,7 @@ struct vpss_dev {
 	struct vb2_v4l2_buffer	*curr_dst;
 
 	bool			coef_is_identity;
+	unsigned int		streaming;	/* streaming OUTPUT queues; clocks held */
 };
 
 struct vpss_ctx {
@@ -616,6 +617,27 @@ static void vpss_buf_finish(struct vb2_buffer *vb)
 	vb2_set_plane_payload(vb, 0, q_data->sizeimage);
 }
 
+static int vpss_start_streaming(struct vb2_queue *vq, unsigned int count)
+{
+	struct vpss_ctx *ctx = vb2_get_drv_priv(vq);
+	struct vpss_dev *vpss = ctx->dev;
+	int ret;
+
+	if (!V4L2_TYPE_IS_OUTPUT(vq->type))
+		return 0;
+
+	/* Hold the block's clocks for the whole streaming session (vendor
+	 * open_clk() semantics): per-job pm_runtime get/put toggles the
+	 * gates right after frame-end, while ODMA may still be draining,
+	 * and a write to the clockless window stalls the bus. */
+	if (vpss->streaming++)
+		return 0;
+	ret = pm_runtime_resume_and_get(vpss->dev);
+	if (ret)
+		vpss->streaming--;
+	return ret;
+}
+
 static void vpss_stop_streaming(struct vb2_queue *vq)
 {
 	struct vpss_ctx *ctx = vb2_get_drv_priv(vq);
@@ -631,10 +653,15 @@ static void vpss_stop_streaming(struct vb2_queue *vq)
 			break;
 		v4l2_m2m_buf_done(vb, VB2_BUF_STATE_ERROR);
 	}
+
+	if (V4L2_TYPE_IS_OUTPUT(vq->type) && ctx->dev->streaming &&
+	    !--ctx->dev->streaming)
+		pm_runtime_put_sync(ctx->dev->dev);
 }
 
 static const struct vb2_ops vpss_qops = {
 	.queue_setup	= vpss_queue_setup,
+	.start_streaming = vpss_start_streaming,
 	.buf_prepare	= vpss_buf_prepare,
 	.buf_finish	= vpss_buf_finish,
 	.buf_queue	= vpss_buf_queue,
@@ -696,8 +723,6 @@ static void vpss_job_finish(struct vpss_dev *vpss, enum vb2_buffer_state state)
 	if (WARN_ON(!ctx || !src || !dst))
 		return;
 
-	pm_runtime_put(vpss->dev);
-
 	v4l2_m2m_buf_done(src, state);
 	v4l2_m2m_buf_done(dst, state);
 	v4l2_m2m_job_finish(vpss->m2m_dev, ctx->fh.m2m_ctx);
@@ -711,7 +736,6 @@ static void vpss_device_run(void *priv)
 	struct vpss_q_data *q_in = &ctx->q_data[V4L2_BUF_TYPE_VIDEO_OUTPUT];
 	struct vpss_q_data *q_out = &ctx->q_data[V4L2_BUF_TYPE_VIDEO_CAPTURE];
 	unsigned long flags;
-	int ret;
 
 	src = v4l2_m2m_next_src_buf(ctx->fh.m2m_ctx);
 	dst = v4l2_m2m_next_dst_buf(ctx->fh.m2m_ctx);
@@ -735,9 +759,7 @@ static void vpss_device_run(void *priv)
 		return;
 	}
 
-	ret = pm_runtime_get_sync(vpss->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(vpss->dev);
+	if (WARN_ON(!vpss->streaming)) {
 		src = v4l2_m2m_src_buf_remove(ctx->fh.m2m_ctx);
 		dst = v4l2_m2m_dst_buf_remove(ctx->fh.m2m_ctx);
 		v4l2_m2m_buf_done(src, VB2_BUF_STATE_ERROR);
@@ -778,15 +800,20 @@ static const struct v4l2_m2m_ops vpss_m2m_ops = {
 static irqreturn_t vpss_isr(int irq, void *data)
 {
 	struct vpss_dev *vpss = data;
-	u32 status = vpss_read(vpss, TOP_INTR_STATUS);
+	u32 raw = vpss_read(vpss, TOP_INTR_STATUS);
+	u32 status = raw & (INTR_IMG_IN_V_FRAME_END | INTR_SCL1_FRAME_END |
+			    INTR_PROG_TOO_LATE);
 
-	status &= INTR_IMG_IN_V_FRAME_END | INTR_SCL1_FRAME_END |
-		  INTR_PROG_TOO_LATE;
-	if (!status)
+	if (!raw)
 		return IRQ_NONE;
 
-	/* W1C */
-	vpss_write(vpss, TOP_INTR_STATUS, status);
+	/* W1C: clear every raised source, as the vendor ISR does — a bit
+	 * left pending (frame_start, line_target_hit, ...) keeps the
+	 * shared level line asserted. */
+	vpss_write(vpss, TOP_INTR_STATUS, raw);
+
+	if (!status)
+		return IRQ_HANDLED;
 
 	if (status & INTR_PROG_TOO_LATE) {
 		dev_err_ratelimited(vpss->dev, "job programming too late\n");
