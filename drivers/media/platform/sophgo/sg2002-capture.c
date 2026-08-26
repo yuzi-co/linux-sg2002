@@ -525,14 +525,16 @@ static void sg2002_configure_lanes(struct sg2002_capture *cap)
 		sg2002_set_deskew(cap, i, phase);
 	}
 
-	/* D-PHY mode, fixed settle time, no automatic deskew. */
+	/* The RAW path follows the vendor driver's clear clock-invert bits;
+	 * preserve the established HDMI value. */
 	sg2002_update_bits(cap->wrap, WRAP_PHY4_MODE, GENMASK(1, 0), 0);
 	sg2002_update_bits(cap->wrap, WRAP_PHY4_HS_SETTLE,
 			    WRAP_PHY4_SETTLE | WRAP_PHY4_AUTO_IGNORE |
 			    WRAP_PHY4_AUTO_SYNC,
 			    FIELD_PREP(WRAP_PHY4_SETTLE, SG2002_HS_SETTLE));
 	sg2002_update_bits(cap->wrap, WRAP_TOP_DESKEW_FORCE,
-			    WRAP_TOP_CLOCK_INVERT, WRAP_TOP_CLOCK_INVERT);
+			    WRAP_TOP_CLOCK_INVERT,
+			    cap->yuv_input ? WRAP_TOP_CLOCK_INVERT : 0);
 }
 
 static void sg2002_csi_enable(struct sg2002_capture *cap, bool enable)
@@ -578,9 +580,12 @@ static void sg2002_csi_enable(struct sg2002_capture *cap, bool enable)
 			    WRAP_PHY4_DESKEW_LANES, 0);
 	sg2002_update_bits(cap->wrap, WRAP_TOP_POWER, WRAP_TOP_PD_RXLP, 0);
 	udelay(20);
+	/* RAW follows vendor cif_stream_enable(); HDMI keeps all four. */
 	sg2002_update_bits(cap->wrap, WRAP_PHY4_LANE_ENABLE,
 			    WRAP_PHY4_DESKEW_LANES,
-			    FIELD_PREP(WRAP_PHY4_DESKEW_LANES, 0xf));
+			    FIELD_PREP(WRAP_PHY4_DESKEW_LANES,
+				       cap->yuv_input ? 0xf :
+				       (1 << cap->bus.num_data_lanes) - 1));
 }
 
 static void sg2002_dma_set_addr(struct sg2002_capture *cap, dma_addr_t addr)
