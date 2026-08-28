@@ -481,13 +481,29 @@ static void sg2002_configure_lanes(struct sg2002_capture *cap)
 	const struct v4l2_mbus_config_mipi_csi2 *bus = &cap->bus;
 	u32 data_sel = 0;
 	u32 swaps = 0;
+	bool used[SG2002_NUM_PHYS_LANES] = {};
 	u32 route;
 	unsigned int i;
+	unsigned int logical_lane;
 
+	used[bus->clock_lane] = true;
 	for (i = 0; i < bus->num_data_lanes; i++) {
 		data_sel |= (u32)bus->data_lanes[i] << (i * 4);
 		if (bus->lane_polarities[i + 1])
 			swaps |= BIT(8 + i);
+		used[bus->data_lanes[i]] = true;
+	}
+
+	/* The selector is a full four-entry permutation.  Match the vendor
+	 * CIF driver by assigning otherwise-unused physical lanes to the
+	 * inactive logical slots instead of leaving duplicate lane zeroes. */
+	logical_lane = bus->num_data_lanes;
+	for (i = 0; i < SG2002_NUM_PHYS_LANES &&
+	     logical_lane < SG2002_NUM_DATA_LANES; i++) {
+		if (used[i])
+			continue;
+		data_sel |= (u32)i << (logical_lane * 4);
+		logical_lane++;
 	}
 
 	writel(data_sel, cap->wrap + WRAP_PHY4_DATA_SEL);
