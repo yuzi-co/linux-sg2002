@@ -748,16 +748,16 @@ static void sg2002_stop_capture(struct sg2002_capture *cap,
 	spin_unlock_irqrestore(&cap->qlock, flags);
 
 	if (cap->clocks_enabled) {
-		sg2002_vi_disable(cap);
-		sg2002_csi_enable(cap, false);
-		synchronize_irq(cap->vi_irq);
-		synchronize_irq(cap->csi_irq);
-
 		if (cap->source_streaming) {
 			v4l2_subdev_disable_streams(cap->source, cap->source_pad,
 						    BIT(0));
 			cap->source_streaming = false;
 		}
+
+		sg2002_vi_disable(cap);
+		sg2002_csi_enable(cap, false);
+		synchronize_irq(cap->vi_irq);
+		synchronize_irq(cap->csi_irq);
 	}
 
 	sg2002_return_buffers(cap, state);
@@ -1005,13 +1005,15 @@ static int sg2002_start_streaming(struct vb2_queue *q, unsigned int count)
 		goto err_stop;
 	}
 
+	sg2002_csi_enable(cap, true);
+	sg2002_vi_enable(cap, first->dma_addr);
+
+	/* Arm the sink before the source changes from LP idle to HS.  The
+	 * SG2002 D-PHY needs to observe that transition to acquire sync. */
 	ret = v4l2_subdev_enable_streams(cap->source, cap->source_pad, BIT(0));
 	if (ret && ret != -ENOIOCTLCMD)
 		goto err_stop;
 	cap->source_streaming = true;
-
-	sg2002_csi_enable(cap, true);
-	sg2002_vi_enable(cap, first->dma_addr);
 	return 0;
 
 err_stop:
