@@ -267,17 +267,17 @@ static void sg2002_set_hdmi_defaults(struct sg2002_capture *cap)
 	cap->yuv_input = true;
 }
 
-static u32 sg2002_raw10_pixelformat(u32 code)
+static u32 sg2002_repacked_raw_pixelformat(u32 code)
 {
 	switch (code) {
 	case MEDIA_BUS_FMT_SRGGB10_1X10:
-		return V4L2_PIX_FMT_SRGGB10P;
+		return V4L2_PIX_FMT_SRGGB12P;
 	case MEDIA_BUS_FMT_SGRBG10_1X10:
-		return V4L2_PIX_FMT_SGRBG10P;
+		return V4L2_PIX_FMT_SGRBG12P;
 	case MEDIA_BUS_FMT_SGBRG10_1X10:
-		return V4L2_PIX_FMT_SGBRG10P;
+		return V4L2_PIX_FMT_SGBRG12P;
 	case MEDIA_BUS_FMT_SBGGR10_1X10:
-		return V4L2_PIX_FMT_SBGGR10P;
+		return V4L2_PIX_FMT_SBGGR12P;
 	default:
 		return 0;
 	}
@@ -301,7 +301,7 @@ static void sg2002_adopt_source_format(struct sg2002_capture *cap)
 	if (v4l2_subdev_call(cap->source, pad, get_fmt, NULL, &fmt))
 		return;
 
-	pixelformat = sg2002_raw10_pixelformat(fmt.format.code);
+	pixelformat = sg2002_repacked_raw_pixelformat(fmt.format.code);
 	if (!pixelformat)
 		return;
 
@@ -309,7 +309,7 @@ static void sg2002_adopt_source_format(struct sg2002_capture *cap)
 	cap->mbus_code = fmt.format.code;
 	cap->width = fmt.format.width;
 	cap->height = fmt.format.height;
-	cap->bytesperline = ALIGN(cap->width * 10 / 8, 16);
+	cap->bytesperline = ALIGN(3 * DIV_ROUND_UP(cap->width, 2), 16);
 	cap->sizeimage = cap->bytesperline * cap->height;
 	cap->yuv_input = false;
 	dev_info(cap->dev, "RAW source %ux%u code %#x -> %p4cc, %u B/line\n",
