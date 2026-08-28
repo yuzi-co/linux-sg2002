@@ -1363,7 +1363,7 @@ static int sg2002_register_media(struct sg2002_capture *cap,
 	q->ops = &sg2002_vb2_ops;
 	q->mem_ops = &vb2_dma_contig_memops;
 	q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
-	q->min_queued_buffers = 2;
+	q->min_queued_buffers = 1;
 	q->dev = cap->dev;
 	ret = vb2_queue_init(q);
 	if (ret)
