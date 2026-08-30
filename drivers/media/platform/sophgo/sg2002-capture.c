@@ -44,6 +44,7 @@
 #define SG2002_HEIGHT		1080
 #define SG2002_BYTES_PER_LINE	ALIGN(SG2002_WIDTH * 2, 16)
 #define SG2002_SIZE_IMAGE	(SG2002_BYTES_PER_LINE * SG2002_HEIGHT)
+#define SG2002_CAPTURE_MAX_BUFFERS	2
 
 /* CSI MAC0 register blocks. */
 #define MAC_TOP_CTRL		0x000
@@ -899,6 +900,13 @@ static int sg2002_queue_setup(struct vb2_queue *q, unsigned int *num_buffers,
 			      struct device *alloc_devs[])
 {
 	struct sg2002_capture *cap = vb2_get_drv_priv(q);
+	unsigned int allocated = vb2_get_num_buffers(q);
+
+	/* The private media pool budgets two frame buffers plus scratch. */
+	if (allocated >= SG2002_CAPTURE_MAX_BUFFERS)
+		return -ENOBUFS;
+	*num_buffers = min(*num_buffers,
+			   SG2002_CAPTURE_MAX_BUFFERS - allocated);
 
 	if (*num_planes)
 		return sizes[0] < cap->sizeimage ? -EINVAL : 0;
