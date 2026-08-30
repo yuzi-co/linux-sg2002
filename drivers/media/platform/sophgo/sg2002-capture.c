@@ -65,8 +65,7 @@
 #define MAC_CSI_IRQ_WC_ERR	BIT(3)
 #define MAC_CSI_IRQ_FIFO_FULL	BIT(4)
 #define MAC_CSI_IRQ_ERRORS	GENMASK(4, 0)
-#define MAC_CSI_IRQ_FATAL	(MAC_CSI_IRQ_CRC_ERR | \
-				 MAC_CSI_IRQ_WC_ERR | MAC_CSI_IRQ_FIFO_FULL)
+#define MAC_CSI_IRQ_FATAL	MAC_CSI_IRQ_FIFO_FULL
 #define MAC_CSI_IRQ_RESERVED	GENMASK(7, 5)
 #define MAC_CSI_VC_MAP		(MAC_CSI_BASE + 0x18)
 #define MAC_CSI_IRQ_STATUS	(MAC_CSI_BASE + 0x60)
@@ -230,6 +229,7 @@ struct sg2002_capture {
 	bool pipeline_started;
 	bool clocks_enabled;
 	bool error_pending;
+	bool frame_error;
 	bool removing;
 	struct work_struct error_work;
 
@@ -677,6 +677,7 @@ static void sg2002_vi_enable(struct sg2002_capture *cap, dma_addr_t addr)
 	spin_lock_irqsave(&cap->qlock, flags);
 	WRITE_ONCE(cap->streaming, true);
 	cap->error_pending = false;
+	cap->frame_error = false;
 	spin_unlock_irqrestore(&cap->qlock, flags);
 	writel(VI_ISP_FRAME_DONE_FE0_CH0, cap->vi + VI_ISP_INT_EVENT0_EN);
 	sg2002_csi_irq_enable(cap, true);
@@ -842,6 +843,16 @@ static irqreturn_t sg2002_irq(int irq, void *data)
 		spin_unlock_irqrestore(&cap->qlock, flags);
 		return IRQ_HANDLED;
 	}
+	if (cap->frame_error) {
+		/* Keep the damaged buffer private and overwrite it with the next
+		 * frame.  Userspace must never observe packet-corrupt payload. */
+		cap->frame_error = false;
+		sg2002_dma_set_addr(cap, cap->active ? cap->active->dma_addr :
+				    cap->scratch_dma);
+		sg2002_preraw_fe0_trigger(cap);
+		spin_unlock_irqrestore(&cap->qlock, flags);
+		return IRQ_HANDLED;
+	}
 	done = cap->active;
 	next = sg2002_next_buffer(cap);
 	cap->active = next;
@@ -885,12 +896,17 @@ static irqreturn_t sg2002_csi_irq(int irq, void *data)
 			     status & MAC_CSI_IRQ_FIFO_FULL ? " FIFO-full" : "");
 	if (status & MAC_CSI_IRQ_FATAL) {
 		/*
-		 * A FIFO overrun loses byte alignment, while CRC and word-count
-		 * failures make the fixed DMA frame geometry untrustworthy. Stop
-		 * DMA immediately, then do the sleeping source and VB2 teardown in
-		 * process context.
+		 * A FIFO overrun can lose byte alignment across frames.  Stop DMA,
+		 * then do the sleeping source and VB2 teardown in process context.
 		 */
 		sg2002_capture_error(cap);
+	} else {
+		unsigned long flags;
+
+		spin_lock_irqsave(&cap->qlock, flags);
+		if (cap->streaming)
+			cap->frame_error = true;
+		spin_unlock_irqrestore(&cap->qlock, flags);
 	}
 	return IRQ_HANDLED;
 }
