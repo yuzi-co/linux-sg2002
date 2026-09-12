@@ -17,6 +17,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -37,6 +38,8 @@
 #include <media/v4l2-subdev.h>
 #include <media/videobuf2-dma-contig.h>
 #include <media/videobuf2-v4l2.h>
+
+#include "sg2002-isp.h"
 
 #define SG2002_DRV_NAME		"sg2002-capture"
 
@@ -248,6 +251,7 @@ struct sg2002_capture {
 	u32 bytesperline;
 	u32 sizeimage;
 	bool yuv_input;
+	bool isp;
 };
 
 static inline struct sg2002_buffer *to_sg2002_buffer(struct vb2_buffer *vb)
@@ -266,6 +270,7 @@ static void sg2002_set_hdmi_defaults(struct sg2002_capture *cap)
 	cap->bytesperline = SG2002_BYTES_PER_LINE;
 	cap->sizeimage = SG2002_SIZE_IMAGE;
 	cap->yuv_input = true;
+	cap->isp = false;
 }
 
 static u32 sg2002_repacked_raw_pixelformat(u32 code)
@@ -313,6 +318,7 @@ static void sg2002_adopt_source_format(struct sg2002_capture *cap)
 	cap->bytesperline = ALIGN(3 * DIV_ROUND_UP(cap->width, 2), 16);
 	cap->sizeimage = cap->bytesperline * cap->height;
 	cap->yuv_input = false;
+	cap->isp = false;
 	dev_info(cap->dev, "RAW source %ux%u code %#x -> %p4cc, %u B/line\n",
 		 cap->width, cap->height, cap->mbus_code,
 		 &cap->pixelformat, cap->bytesperline);
@@ -607,7 +613,13 @@ static void sg2002_csi_enable(struct sg2002_capture *cap, bool enable)
 
 static void sg2002_dma_set_addr(struct sg2002_capture *cap, dma_addr_t addr)
 {
-	u32 sys = readl(cap->vi + VI_DMA_SYS_CTRL);
+	u32 sys;
+
+	if (cap->isp) {
+		sg2002_isp_set_addr(cap->vi, addr, cap->bytesperline, cap->height);
+		return;
+	}
+	sys = readl(cap->vi + VI_DMA_SYS_CTRL);
 
 	sys &= ~VI_DMA_BASE_HIGH;
 	sys |= FIELD_PREP(VI_DMA_BASE_HIGH, upper_32_bits(addr));
@@ -628,6 +640,20 @@ static void sg2002_preraw_fe0_trigger(struct sg2002_capture *cap)
 {
 	writel(VI_PRE_RAW_FE0_PQ_VALID, cap->vi + VI_PRE_RAW_FRAME_VALID);
 	writel(VI_PRE_RAW_FE0_VALID, cap->vi + VI_PRE_RAW_FRAME_VALID);
+}
+
+static u32 sg2002_isp_bayer_order(struct sg2002_capture *cap)
+{
+	switch (cap->mbus_code) {
+	case MEDIA_BUS_FMT_SBGGR10_1X10:
+		return 0;
+	case MEDIA_BUS_FMT_SGBRG10_1X10:
+		return 1;
+	case MEDIA_BUS_FMT_SGRBG10_1X10:
+		return 2;
+	default:
+		return 3;
+	}
 }
 
 static void sg2002_vi_enable(struct sg2002_capture *cap, dma_addr_t addr)
@@ -653,11 +679,16 @@ static void sg2002_vi_enable(struct sg2002_capture *cap, dma_addr_t addr)
 	ctrl = FIELD_PREP(VI_CSIBDG_CSI_MODE, 1);
 	if (cap->yuv_input)
 		ctrl |= VI_CSIBDG_YUV_INPUT;
-	writel(cap->bytesperline, cap->vi + VI_DMA_SEG_LEN);
-	writel(cap->bytesperline, cap->vi + VI_DMA_STRIDE);
-	writel(cap->height, cap->vi + VI_DMA_SEG_NUM);
-	sg2002_dma_set_addr(cap, addr);
-	ctrl |= VI_CSIBDG_CH0_DMA;
+	if (cap->isp) {
+		sg2002_isp_configure(cap->vi, cap->width, cap->height,
+				      cap->bytesperline, sg2002_isp_bayer_order(cap), addr);
+	} else {
+		writel(cap->bytesperline, cap->vi + VI_DMA_SEG_LEN);
+		writel(cap->bytesperline, cap->vi + VI_DMA_STRIDE);
+		writel(cap->height, cap->vi + VI_DMA_SEG_NUM);
+		sg2002_dma_set_addr(cap, addr);
+		ctrl |= VI_CSIBDG_CH0_DMA;
+	}
 	writel(ctrl, cap->vi + VI_CSIBDG_TOP_CTRL);
 	writel(0, cap->vi + VI_CSIBDG_INT_CTRL);
 	writel(FIELD_PREP(VI_CSIBDG_WIDTH, cap->width - 1) |
@@ -665,11 +696,20 @@ static void sg2002_vi_enable(struct sg2002_capture *cap, dma_addr_t addr)
 	       cap->vi + VI_CSIBDG_CH0_SIZE);
 
 	sg2002_preraw_fe0_trigger(cap);
-	writel(VI_ISP_FE0_HW_TRIGGER | VI_ISP_FE0_HW_SHADOW,
-	       cap->vi + VI_ISP_CTRL_MODE0);
-	writel(VI_ISP_FE0_HW_PQ, cap->vi + VI_ISP_CTRL_MODE1);
-	sg2002_configure_single_yuv_scenario(cap);
-	sg2002_dma_set_hw_mode(cap);
+	if (cap->isp) {
+		writel(ISP_ONLINE_STAGES | (ISP_ONLINE_STAGES << 16),
+		       cap->vi + VI_ISP_CTRL_MODE0);
+		writel(ISP_ONLINE_STAGES, cap->vi + VI_ISP_CTRL_MODE1);
+		cap->scenarios_ctrl = readl(cap->vi + VI_ISP_SCENARIOS_CTRL);
+		cap->scenarios_ctrl_changed = true;
+		writel(ISP_ONLINE_SCENARIO, cap->vi + VI_ISP_SCENARIOS_CTRL);
+	} else {
+		writel(VI_ISP_FE0_HW_TRIGGER | VI_ISP_FE0_HW_SHADOW,
+		       cap->vi + VI_ISP_CTRL_MODE0);
+		writel(VI_ISP_FE0_HW_PQ, cap->vi + VI_ISP_CTRL_MODE1);
+		sg2002_configure_single_yuv_scenario(cap);
+		sg2002_dma_set_hw_mode(cap);
+	}
 	writel(0x00000d01, cap->vi + VI_ISP_SW_CTRL1);
 	writel(0x0d010000, cap->vi + VI_ISP_SW_CTRL0);
 
@@ -679,7 +719,10 @@ static void sg2002_vi_enable(struct sg2002_capture *cap, dma_addr_t addr)
 	cap->error_pending = false;
 	cap->frame_error = false;
 	spin_unlock_irqrestore(&cap->qlock, flags);
-	writel(VI_ISP_FRAME_DONE_FE0_CH0, cap->vi + VI_ISP_INT_EVENT0_EN);
+	writel(cap->isp ? ISP_FRAME_DONE_POST : VI_ISP_FRAME_DONE_FE0_CH0,
+	       cap->vi + VI_ISP_INT_EVENT0_EN);
+	if (cap->isp)
+		writel(ISP_FRAME_ERROR | ISP_DMA_ERROR, cap->vi + VI_ISP_INT_EVENT2_EN);
 	sg2002_csi_irq_enable(cap, true);
 	ctrl |= VI_CSIBDG_CSI_ENABLE | VI_CSIBDG_UPDATE;
 	writel(ctrl, cap->vi + VI_CSIBDG_TOP_CTRL);
@@ -691,6 +734,8 @@ static void sg2002_vi_quiesce(struct sg2002_capture *cap)
 	sg2002_update_bits(cap->vi, VI_CSIBDG_TOP_CTRL,
 			    VI_CSIBDG_CSI_ENABLE | VI_CSIBDG_CH0_DMA |
 			    VI_CSIBDG_UPDATE, 0);
+	if (cap->isp)
+		sg2002_isp_quiesce(cap->vi);
 	writel(0, cap->vi + VI_ISP_INT_EVENT0_EN);
 	writel(0, cap->vi + VI_ISP_INT_EVENT1_EN);
 	writel(0, cap->vi + VI_ISP_INT_EVENT2_EN);
@@ -698,7 +743,24 @@ static void sg2002_vi_quiesce(struct sg2002_capture *cap)
 
 static void sg2002_vi_disable(struct sg2002_capture *cap)
 {
+	u32 idle;
+
 	sg2002_vi_quiesce(cap);
+	if (cap->isp) {
+		/* A stopped sensor can leave a partial frame. Never return buffers
+		 * while the post-processing write engines still own them.
+		 */
+		if (readl_poll_timeout(cap->vi + ISP_BLK_IDLE, idle,
+				       (idle & ISP_PIPELINE_IDLE) == ISP_PIPELINE_IDLE,
+				       100, 50000))
+			dev_warn(cap->dev, "ISP stop: resetting partial frame, idle=%#x\n", idle);
+		writel(0x40, cap->vi + VI_ISP_SW_RST);
+		writel(0x37f, cap->vi + VI_ISP_SW_RST);
+		readl(cap->vi + VI_ISP_SW_RST);
+		udelay(5);
+		writel(0x40, cap->vi + VI_ISP_SW_RST);
+		writel(0, cap->vi + VI_ISP_SW_RST);
+	}
 	writel(~0U, cap->vi + VI_ISP_INT_EVENT0);
 	writel(~0U, cap->vi + VI_ISP_INT_EVENT1);
 	writel(~0U, cap->vi + VI_ISP_INT_EVENT2);
@@ -832,7 +894,12 @@ static irqreturn_t sg2002_irq(int irq, void *data)
 	writel(status2, cap->vi + VI_ISP_INT_EVENT2);
 	if (!(status0 | status1 | status2))
 		return IRQ_NONE;
-	if (!(status0 & VI_ISP_FRAME_DONE_FE0_CH0))
+	if (cap->isp && (status2 & (ISP_FRAME_ERROR | ISP_DMA_ERROR))) {
+		dev_err_ratelimited(cap->dev, "ISP frame/DMA error %#x\n", status2);
+		sg2002_capture_error(cap);
+		return IRQ_HANDLED;
+	}
+	if (!(status0 & (cap->isp ? ISP_FRAME_DONE_POST : VI_ISP_FRAME_DONE_FE0_CH0)))
 		return IRQ_HANDLED;
 	if (!READ_ONCE(cap->streaming))
 		return IRQ_HANDLED;
@@ -1072,7 +1139,13 @@ static void sg2002_fill_pix_format(struct sg2002_capture *cap,
 	pix->field = V4L2_FIELD_NONE;
 	pix->bytesperline = cap->bytesperline;
 	pix->sizeimage = cap->sizeimage;
-	if (cap->yuv_input) {
+	if (cap->isp) {
+		/* Fixed full-range BT.601 CSC, with gamma bypassed. */
+		pix->colorspace = V4L2_COLORSPACE_SRGB;
+		pix->ycbcr_enc = V4L2_YCBCR_ENC_601;
+		pix->quantization = V4L2_QUANTIZATION_FULL_RANGE;
+		pix->xfer_func = V4L2_XFER_FUNC_NONE;
+	} else if (cap->yuv_input) {
 		pix->colorspace = V4L2_COLORSPACE_REC709;
 		pix->ycbcr_enc = V4L2_YCBCR_ENC_709;
 		pix->quantization = V4L2_QUANTIZATION_LIM_RANGE;
@@ -1098,10 +1171,11 @@ static int sg2002_enum_fmt(struct file *file, void *priv,
 {
 	struct sg2002_capture *cap = video_drvdata(file);
 
-	if (fmt->index)
+	if (fmt->index > (cap->yuv_input || ((cap->width | cap->height) & 1) ? 0 : 1))
 		return -EINVAL;
 
-	fmt->pixelformat = cap->pixelformat;
+	fmt->pixelformat = cap->yuv_input ? V4L2_PIX_FMT_UYVY :
+		fmt->index ? V4L2_PIX_FMT_NV21 : sg2002_repacked_raw_pixelformat(cap->mbus_code);
 	return 0;
 }
 
@@ -1117,8 +1191,30 @@ static int sg2002_try_fmt(struct file *file, void *priv,
 			  struct v4l2_format *fmt)
 {
 	struct sg2002_capture *cap = video_drvdata(file);
+	u32 requested = fmt->fmt.pix.pixelformat;
 
 	sg2002_fill_pix_format(cap, &fmt->fmt.pix);
+	if (!cap->yuv_input) {
+		struct v4l2_pix_format *pix = &fmt->fmt.pix;
+
+		if (requested == V4L2_PIX_FMT_NV21 && !((cap->width | cap->height) & 1)) {
+			pix->pixelformat = V4L2_PIX_FMT_NV21;
+			pix->bytesperline = ALIGN(cap->width, 16);
+			pix->sizeimage = pix->bytesperline * cap->height * 3 / 2;
+			pix->colorspace = V4L2_COLORSPACE_SRGB;
+			pix->ycbcr_enc = V4L2_YCBCR_ENC_601;
+			pix->quantization = V4L2_QUANTIZATION_FULL_RANGE;
+			pix->xfer_func = V4L2_XFER_FUNC_NONE;
+		} else {
+			pix->pixelformat = sg2002_repacked_raw_pixelformat(cap->mbus_code);
+			pix->bytesperline = ALIGN(DIV_ROUND_UP(cap->width, 2) * 3, 16);
+			pix->sizeimage = pix->bytesperline * cap->height;
+			pix->colorspace = V4L2_COLORSPACE_RAW;
+			pix->ycbcr_enc = V4L2_YCBCR_ENC_DEFAULT;
+			pix->quantization = V4L2_QUANTIZATION_FULL_RANGE;
+			pix->xfer_func = V4L2_XFER_FUNC_NONE;
+		}
+	}
 	return 0;
 }
 
@@ -1129,7 +1225,12 @@ static int sg2002_s_fmt(struct file *file, void *priv, struct v4l2_format *fmt)
 	if (vb2_is_busy(&cap->queue))
 		return -EBUSY;
 
-	return sg2002_try_fmt(file, priv, fmt);
+	sg2002_try_fmt(file, priv, fmt);
+	cap->pixelformat = fmt->fmt.pix.pixelformat;
+	cap->bytesperline = fmt->fmt.pix.bytesperline;
+	cap->sizeimage = fmt->fmt.pix.sizeimage;
+	cap->isp = cap->pixelformat == V4L2_PIX_FMT_NV21;
+	return 0;
 }
 
 static int sg2002_subscribe_event(struct v4l2_fh *fh,
@@ -1146,7 +1247,11 @@ static int sg2002_enum_framesizes(struct file *file, void *priv,
 {
 	struct sg2002_capture *cap = video_drvdata(file);
 
-	if (fsize->index || fsize->pixel_format != cap->pixelformat)
+	if (fsize->index ||
+	    (fsize->pixel_format == V4L2_PIX_FMT_NV21 && ((cap->width | cap->height) & 1)) ||
+	    (cap->yuv_input ? fsize->pixel_format != V4L2_PIX_FMT_UYVY :
+	     fsize->pixel_format != V4L2_PIX_FMT_NV21 &&
+	     fsize->pixel_format != sg2002_repacked_raw_pixelformat(cap->mbus_code)))
 		return -EINVAL;
 
 	fsize->type = V4L2_FRMSIZE_TYPE_DISCRETE;
