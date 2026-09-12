@@ -127,12 +127,12 @@ struct vpss_fmt {
 	bool	is_420sp;	/* two-plane semiplanar 4:2:0 */
 };
 
-static const struct vpss_fmt vpss_out_fmts[] = {
+static const struct vpss_fmt vpss_cap_fmts[] = {
 	{ V4L2_PIX_FMT_NV12, HW_FMT_NV12, 8, true },
 	{ V4L2_PIX_FMT_NV21, HW_FMT_NV21, 8, true },
 };
 
-static const struct vpss_fmt vpss_cap_fmts[] = {
+static const struct vpss_fmt vpss_out_fmts[] = {
 	{ V4L2_PIX_FMT_UYVY, HW_FMT_UYVY, 16, false },
 	{ V4L2_PIX_FMT_YUYV, HW_FMT_YUYV, 16, false },
 	{ V4L2_PIX_FMT_NV12, HW_FMT_NV12, 8, true },
@@ -409,8 +409,8 @@ static struct vpss_q_data *vpss_get_q_data(struct vpss_ctx *ctx,
 
 static const struct vpss_fmt *vpss_find_fmt(u32 fourcc, bool output)
 {
-	const struct vpss_fmt *fmts = output ? vpss_cap_fmts : vpss_out_fmts;
-	int i, n = output ? ARRAY_SIZE(vpss_cap_fmts) : ARRAY_SIZE(vpss_out_fmts);
+	const struct vpss_fmt *fmts = output ? vpss_out_fmts : vpss_cap_fmts;
+	int i, n = output ? ARRAY_SIZE(vpss_out_fmts) : ARRAY_SIZE(vpss_cap_fmts);
 
 	for (i = 0; i < n; i++)
 		if (fmts[i].fourcc == fourcc)
