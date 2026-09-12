@@ -176,7 +176,8 @@ struct vpss_dev {
 struct vpss_ctx {
 	struct v4l2_fh		fh;
 	struct vpss_dev		*dev;
-	struct vpss_q_data	q_data[2];	/* [OUTPUT]=src, [CAPTURE]=dst */
+	/* Indexed by enum v4l2_buf_type: CAPTURE is 1, OUTPUT is 2. */
+	struct vpss_q_data	q_data[V4L2_BUF_TYPE_VIDEO_OUTPUT + 1];
 	/* CAPTURE-side crop: the visible image inside the (possibly
 	 * macroblock-padded) CAPTURE surface.  The scaler produces the
 	 * crop geometry; the format geometry only sets the plane layout
