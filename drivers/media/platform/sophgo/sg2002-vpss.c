@@ -178,6 +178,11 @@ struct vpss_ctx {
 	struct vpss_dev		*dev;
 	/* Indexed by enum v4l2_buf_type: CAPTURE is 1, OUTPUT is 2. */
 	struct vpss_q_data	q_data[V4L2_BUF_TYPE_VIDEO_OUTPUT + 1];
+	/* YUV scaling/repacking preserves the source colour encoding. */
+	u32			colorspace;
+	u32			xfer_func;
+	u32			ycbcr_enc;
+	u32			quantization;
 	/* CAPTURE-side crop: the visible image inside the (possibly
 	 * macroblock-padded) CAPTURE surface.  The scaler produces the
 	 * crop geometry; the format geometry only sets the plane layout
@@ -462,6 +467,15 @@ static int vpss_enum_framesizes(struct file *file, void *priv,
 	return 0;
 }
 
+static void vpss_get_colorimetry(struct vpss_ctx *ctx,
+			       struct v4l2_pix_format *pix)
+{
+	pix->colorspace = ctx->colorspace;
+	pix->xfer_func = ctx->xfer_func;
+	pix->ycbcr_enc = ctx->ycbcr_enc;
+	pix->quantization = ctx->quantization;
+}
+
 static int vpss_g_fmt(struct file *file, void *priv, struct v4l2_format *f)
 {
 	struct vpss_ctx *ctx = file->private_data;
@@ -474,15 +488,13 @@ static int vpss_g_fmt(struct file *file, void *priv, struct v4l2_format *f)
 	pix->field = V4L2_FIELD_NONE;
 	pix->bytesperline = q_data->bytesperline;
 	pix->sizeimage = q_data->sizeimage;
-	pix->colorspace = V4L2_COLORSPACE_REC709;
-	pix->xfer_func = V4L2_XFER_FUNC_709;
-	pix->ycbcr_enc = V4L2_YCBCR_ENC_709;
-	pix->quantization = V4L2_QUANTIZATION_LIM_RANGE;
+	vpss_get_colorimetry(ctx, pix);
 	return 0;
 }
 
 static int vpss_try_fmt(struct file *file, void *priv, struct v4l2_format *f)
 {
+	struct vpss_ctx *ctx = file->private_data;
 	struct v4l2_pix_format *pix = &f->fmt.pix;
 	const struct vpss_fmt *fmt;
 
@@ -498,6 +510,20 @@ static int vpss_try_fmt(struct file *file, void *priv, struct v4l2_format *f)
 	pix->sizeimage = pix->bytesperline * pix->height;
 	if (fmt->is_420sp)
 		pix->sizeimage += pix->width * pix->height / 2;
+	if (V4L2_TYPE_IS_OUTPUT(f->type)) {
+		if (pix->colorspace == V4L2_COLORSPACE_DEFAULT)
+			pix->colorspace = V4L2_COLORSPACE_REC709;
+		if (pix->xfer_func == V4L2_XFER_FUNC_DEFAULT)
+			pix->xfer_func = V4L2_MAP_XFER_FUNC_DEFAULT(pix->colorspace);
+		if (pix->ycbcr_enc == V4L2_YCBCR_ENC_DEFAULT)
+			pix->ycbcr_enc = V4L2_MAP_YCBCR_ENC_DEFAULT(pix->colorspace);
+		if (pix->quantization == V4L2_QUANTIZATION_DEFAULT)
+			pix->quantization = V4L2_MAP_QUANTIZATION_DEFAULT(false,
+						pix->colorspace, pix->ycbcr_enc);
+	} else {
+		/* No colour conversion: CAPTURE cannot request a different matrix. */
+		vpss_get_colorimetry(ctx, pix);
+	}
 	return 0;
 }
 
@@ -517,6 +543,22 @@ static int vpss_s_fmt(struct file *file, void *priv, struct v4l2_format *f)
 	ret = vpss_try_fmt(file, priv, f);
 	if (ret)
 		return ret;
+
+	if (V4L2_TYPE_IS_OUTPUT(f->type)) {
+		struct v4l2_pix_format *pix = &f->fmt.pix;
+
+		vq = v4l2_m2m_get_vq(ctx->fh.m2m_ctx, V4L2_BUF_TYPE_VIDEO_CAPTURE);
+		if (vb2_is_busy(vq) &&
+		    (ctx->colorspace != pix->colorspace ||
+		     ctx->xfer_func != pix->xfer_func ||
+		     ctx->ycbcr_enc != pix->ycbcr_enc ||
+		     ctx->quantization != pix->quantization))
+			return -EBUSY;
+		ctx->colorspace = pix->colorspace;
+		ctx->xfer_func = pix->xfer_func;
+		ctx->ycbcr_enc = pix->ycbcr_enc;
+		ctx->quantization = pix->quantization;
+	}
 
 	q_data = vpss_get_q_data(ctx, f->type);
 	q_data->fmt = vpss_find_fmt(f->fmt.pix.pixelformat,
@@ -845,6 +887,10 @@ static int vpss_open(struct file *file)
 		return -ENOMEM;
 
 	ctx->dev = vpss;
+	ctx->colorspace = V4L2_COLORSPACE_REC709;
+	ctx->xfer_func = V4L2_XFER_FUNC_709;
+	ctx->ycbcr_enc = V4L2_YCBCR_ENC_709;
+	ctx->quantization = V4L2_QUANTIZATION_LIM_RANGE;
 	v4l2_fh_init(&ctx->fh, video_devdata(file));
 	file->private_data = ctx;
 	v4l2_fh_add(&ctx->fh, file);
