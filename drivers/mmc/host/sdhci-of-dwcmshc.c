@@ -2283,6 +2283,7 @@ static const struct sdhci_ops sdhci_dwcmshc_cv18xx_ops = {
 	.set_clock		= sdhci_set_clock,
 	.set_bus_width		= sdhci_set_bus_width,
 	.set_uhs_signaling	= dwcmshc_set_uhs_signaling,
+	.set_power		= sdhci_set_power_and_bus_voltage,
 	.get_max_clock		= dwcmshc_get_max_clock,
 	.reset			= cv18xx_sdhci_reset,
 	.adma_write_desc	= dwcmshc_adma_write_desc,
