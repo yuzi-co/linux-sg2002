@@ -91,7 +91,7 @@ static CV1800_FACTIONAL_PLL(clk_mpll, clk_bypass_mipimpll_parents,
 			    REG_PLL_G6_STATUS, 0,
 			    pll_limits,
 			    &clk_mpll_synthesizer,
-			    CLK_IS_CRITICAL);
+			    CLK_IS_CRITICAL | CLK_GET_RATE_NOCACHE);
 
 static struct cv1800_clk_pll_synthesizer clk_tpll_synthesizer = {
 	.en		= CV1800_CLK_BIT(REG_PLL_G6_SSC_SYN_CTRL, 3),
@@ -1455,6 +1455,7 @@ static int cv1800_clk_init_ctrl(struct device *dev, void __iomem *reg,
 				struct cv1800_clk_ctrl *ctrl,
 				const struct cv1800_clk_desc *desc)
 {
+	struct cv1800_clk_mmux *cpu_mmux = NULL;
 	int i, ret;
 
 	ctrl->desc = desc;
@@ -1474,12 +1475,28 @@ static int cv1800_clk_init_ctrl(struct device *dev, void __iomem *reg,
 		common->base = reg;
 		common->lock = &ctrl->lock;
 
+		if (hw == &clk_c906_0.common.hw)
+			cpu_mmux = &clk_c906_0;
+
 		ret = devm_clk_hw_register(dev, hw);
 		if (ret) {
 			dev_err(dev, "Couldn't register clock %d - %s\n",
 				i, name);
 			return ret;
 		}
+	}
+
+	/*
+	 * MPLL feeds nothing but the CPU muxes, so it is the one PLL whose
+	 * rate may be changed at runtime. Watch it before the provider is
+	 * published: of_clk_add_hw_provider() applies assigned-clock-rates,
+	 * which is how a board asks for a different CPU PLL frequency.
+	 */
+	if (cpu_mmux) {
+		cpu_mmux->retune_pll = &clk_mpll;
+		ret = cv1800_clk_mmux_add_retune(dev, cpu_mmux);
+		if (ret)
+			return ret;
 	}
 
 	return devm_of_clk_add_hw_provider(dev, of_clk_hw_onecell_get,

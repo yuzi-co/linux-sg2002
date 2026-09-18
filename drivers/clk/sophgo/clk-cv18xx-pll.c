@@ -333,10 +333,8 @@ static int fpll_determine_rate(struct clk_hw *hw, struct clk_rate_request *req)
 	if (!fpll_is_factional_mode(pll))
 		return ipll_determine_rate(hw, req);
 
-	fpll_find_rate(pll, &pll->pll_limit[2], req->best_parent_rate,
-		       &req->rate, &val, &ssc_syn_set);
-
-	return 0;
+	return fpll_find_rate(pll, &pll->pll_limit[2], req->best_parent_rate,
+			      &req->rate, &val, &ssc_syn_set);
 }
 
 static bool fpll_check_mode_ctrl_restrict(unsigned long div_sel,
@@ -357,12 +355,15 @@ static int fpll_set_rate(struct clk_hw *hw, unsigned long rate,
 	u32 detected = 0, detected_ssc = 0;
 	unsigned long flags;
 	struct cv1800_clk_pll *pll = hw_to_cv1800_clk_pll(hw);
+	int ret;
 
 	if (!fpll_is_factional_mode(pll))
 		return ipll_set_rate(hw, rate, parent_rate);
 
-	fpll_find_rate(pll, &pll->pll_limit[2], parent_rate,
-		       &rate, &detected, &detected_ssc);
+	ret = fpll_find_rate(pll, &pll->pll_limit[2], parent_rate,
+			     &rate, &detected, &detected_ssc);
+	if (ret)
+		return ret;
 	pll_get_mode_ctrl(PLL_GET_DIV_SEL(detected),
 			  fpll_check_mode_ctrl_restrict,
 			  pll->pll_limit, &detected);
@@ -416,3 +417,14 @@ const struct clk_ops cv1800_clk_fpll_ops = {
 	.set_parent = fpll_set_parent,
 	.get_parent = fpll_get_parent,
 };
+
+/*
+ * Re-check a PLL that has already been rewritten. The common clock
+ * framework discards set_rate() errors, so a consumer that moved away
+ * before the retune needs its own way to ask whether coming back is safe.
+ */
+int cv1800_clk_pll_poll_lock(struct cv1800_clk_pll *pll)
+{
+	return cv1800_clk_wait_for_lock(&pll->common, pll->pll_status.reg,
+					BIT(pll->pll_status.shift));
+}
