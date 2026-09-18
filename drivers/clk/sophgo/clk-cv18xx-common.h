@@ -75,7 +75,7 @@ int cv1800_clk_clearbit(struct cv1800_clk_common *common,
 int cv1800_clk_checkbit(struct cv1800_clk_common *common,
 			struct cv1800_clk_regbit *field);
 
-void cv1800_clk_wait_for_lock(struct cv1800_clk_common *common,
-			      u32 reg, u32 lock);
+int cv1800_clk_wait_for_lock(struct cv1800_clk_common *common,
+			     u32 reg, u32 update);
 
 #endif // _CLK_SOPHGO_CV18XX_IP_H_

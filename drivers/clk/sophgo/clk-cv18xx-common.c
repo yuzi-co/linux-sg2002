@@ -6,7 +6,6 @@
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/spinlock.h>
-#include <linux/bug.h>
 
 #include "clk-cv18xx-common.h"
 
@@ -52,15 +51,18 @@ int cv1800_clk_checkbit(struct cv1800_clk_common *common,
 
 #define PLL_LOCK_TIMEOUT_US	(200 * 1000)
 
-void cv1800_clk_wait_for_lock(struct cv1800_clk_common *common,
-			      u32 reg, u32 lock)
+int cv1800_clk_wait_for_lock(struct cv1800_clk_common *common,
+			     u32 reg, u32 update)
 {
 	void __iomem *addr = common->base + reg;
+	u32 lock = update << 16;
 	u32 regval;
 
-	if (!lock)
-		return;
+	if (!update)
+		return 0;
 
-	WARN_ON(readl_relaxed_poll_timeout(addr, regval, regval & lock,
-					   100, PLL_LOCK_TIMEOUT_US));
+	/* Each PLL has an update flag and a lock flag sixteen bits above it. */
+	return readl_relaxed_poll_timeout(addr, regval,
+					(regval & (update | lock)) == lock,
+					100, PLL_LOCK_TIMEOUT_US);
 }
