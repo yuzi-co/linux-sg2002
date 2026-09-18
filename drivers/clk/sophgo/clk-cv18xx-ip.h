@@ -6,7 +6,11 @@
 #ifndef _CLK_SOPHGO_CV1800_IP_H_
 #define _CLK_SOPHGO_CV1800_IP_H_
 
+#include <linux/notifier.h>
+
 #include "clk-cv18xx-common.h"
+
+struct cv1800_clk_pll;
 
 struct cv1800_clk_gate {
 	struct cv1800_clk_common	common;
@@ -53,6 +57,27 @@ struct cv1800_clk_mmux {
 	struct cv1800_clk_regbit	clk_sel;
 	const s8			*parent2sel;
 	const u8			*sel2parent[2];
+
+	/*
+	 * Optional: the parent PLL this mux tolerates being retuned. While
+	 * that PLL changes rate the CPU is parked on the other lane, whose
+	 * own PLL is left alone. NULL keeps the mux divider-only.
+	 */
+	struct cv1800_clk_pll		*retune_pll;
+	struct notifier_block		retune_nb;
+	u32				retune_saved_lane;
+	u32				retune_saved_pll;
+	enum {
+		/* Running from the lane the firmware or CPUFreq selected. */
+		CV1800_MMUX_RUNNING = 0,
+		/* Temporarily on the other lane; the caller will return it. */
+		CV1800_MMUX_PARKED,
+		/*
+		 * Left on the other lane because the retuned PLL never
+		 * locked. Slower than requested, but running and truthful.
+		 */
+		CV1800_MMUX_STRANDED,
+	}				retune_state;
 };
 
 struct cv1800_clk_audio {
@@ -257,5 +282,10 @@ extern const struct clk_ops cv1800_clk_mux_ops;
 extern const struct clk_ops cv1800_clk_bypass_mux_ops;
 extern const struct clk_ops cv1800_clk_mmux_ops;
 extern const struct clk_ops cv1800_clk_audio_ops;
+
+int cv1800_clk_mmux_park(struct cv1800_clk_mmux *mmux, unsigned long limit);
+int cv1800_clk_mmux_unpark(struct cv1800_clk_mmux *mmux, int div);
+int cv1800_clk_mmux_add_retune(struct device *dev,
+			       struct cv1800_clk_mmux *mmux);
 
 #endif // _CLK_SOPHGO_CV1800_IP_H_
