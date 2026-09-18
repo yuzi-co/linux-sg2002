@@ -1108,10 +1108,18 @@ static int cv18xx_sdhci_init(struct device *dev, struct sdhci_host *host,
 	struct dwcmshc_priv *priv = sdhci_pltfm_priv(pltfm_host);
 	struct reset_control *rst;
 	struct gpio_desc *wifi_pwr;
+	struct clk *timer;
 	u32 pll_reg_addr, pll_div, bypass_reg_addr, bypass_bit;
 	u32 rtc2ap_reg, pad_cfg_reg, wifi_pinmux_reg;
 	u32 sd_pwrsw_reg, sd_pwrsw_val;
 	int ret;
+
+	/* The independent reference is required for internal clock stability,
+	 * including when the host probes after firmware clocks are gated. */
+	timer = devm_clk_get_optional_enabled(dev, "timer");
+	if (IS_ERR(timer))
+		return dev_err_probe(dev, PTR_ERR(timer),
+				     "failed to enable timer clock\n");
 
 	rst = devm_reset_control_array_get_optional_exclusive(dev);
 	if (IS_ERR(rst))
