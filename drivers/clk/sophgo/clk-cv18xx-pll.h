@@ -115,4 +115,6 @@ struct cv1800_clk_pll {
 extern const struct clk_ops cv1800_clk_ipll_ops;
 extern const struct clk_ops cv1800_clk_fpll_ops;
 
+int cv1800_clk_pll_poll_lock(struct cv1800_clk_pll *pll);
+
 #endif // _CLK_SOPHGO_CV1800_PLL_H_
