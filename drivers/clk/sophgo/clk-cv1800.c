@@ -943,7 +943,7 @@ static CV1800_MMUX(clk_c906_0, clk_c906_0_parents,
 		   REG_CLK_SEL_0, 23,
 		   clk_c906_parent2sel,
 		   clk_c906_sel2parent[0], clk_c906_sel2parent[1],
-		   CLK_IS_CRITICAL | CLK_GET_RATE_NOCACHE);
+		   CLK_IS_CRITICAL | CLK_GET_RATE_NOCACHE | CLK_SET_RATE_NO_REPARENT);
 static CV1800_MMUX(clk_c906_1, clk_c906_1_parents,
 		   REG_CLK_EN_4, 14,
 		   REG_DIV_CLK_C906_1_0, 16, 4, 2, CV1800_DIV_FLAG,
