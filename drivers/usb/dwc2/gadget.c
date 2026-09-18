@@ -5021,6 +5021,22 @@ int dwc2_gadget_init(struct dwc2_hsotg *hsotg)
 	hsotg->gadget.otg_caps = &hsotg->params.otg_caps;
 	hsotg->remote_wakeup_allowed = 0;
 
+	/*
+	 * In DMA mode the core needs 32-bit aligned buffers and OUT transfer
+	 * sizes that are a multiple of the endpoint's maximum packet size.
+	 * Unaligned requests fall back to a kmalloc()ed bounce buffer plus a
+	 * copy on every transfer (dwc2_hsotg_handle_unaligned_buf_start()),
+	 * and the DDMA OUT path silently rounds the programmed length up to a
+	 * packet boundary. The Ethernet gadgets reserve NET_IP_ALIGN bytes in
+	 * every RX skb, which makes every RX request unaligned. Ask u_ether
+	 * for aligned, packet-sized buffers instead; an unaligned IP header
+	 * costs far less than bouncing every frame.
+	 */
+	if (using_dma(hsotg)) {
+		hsotg->gadget.quirk_avoids_skb_reserve = 1;
+		hsotg->gadget.quirk_ep_out_aligned_size = 1;
+	}
+
 	if (hsotg->params.lpm)
 		hsotg->gadget.lpm_capable = true;
 
