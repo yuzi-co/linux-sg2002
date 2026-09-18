@@ -153,16 +153,21 @@ allOf:
       properties:
         compatible:
           contains:
-            const: sophgo,sg2042-dwcmshc
+            enum:
+              - sophgo,sg2042-dwcmshc
+              - sophgo,cv1800b-dwcmshc
+              - sophgo,sg2002-dwcmshc
 
     then:
       properties:
         clocks:
+          minItems: 1
           items:
             - description: core clock
             - description: bus clock
             - description: timer clock
         clock-names:
+          minItems: 1
           items:
             - const: core
             - const: bus
@@ -185,6 +190,18 @@ allOf:
             - const: axi
             - const: block
             - const: timer
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: sophgo,sg2042-dwcmshc
+    then:
+      properties:
+        clocks:
+          minItems: 3
+        clock-names:
+          minItems: 3
 
   - if:
       properties:
