@@ -718,7 +718,7 @@ static int mmux_set_rate(struct clk_hw *hw, unsigned long rate,
 	unsigned long val;
 
 	if (cv1800_clk_checkbit(&mmux->common, &mmux->bypass))
-		return parent_rate;
+		return 0;
 
 	if (cv1800_clk_checkbit(&mmux->common, &mmux->clk_sel))
 		div = &mmux->div[0];
@@ -757,33 +757,36 @@ static int mmux_set_parent(struct clk_hw *hw, u8 index)
 	struct cv1800_clk_mmux *mmux = hw_to_cv1800_clk_mmux(hw);
 	struct cv1800_clk_regfield *mux;
 	unsigned long flags;
+	unsigned int mux_index;
 	u32 reg;
 	s8 clk_sel = mmux->parent2sel[index];
 
-	if (index == 0 || clk_sel == -1) {
-		cv1800_clk_setbit(&mmux->common, &mmux->bypass);
-		goto release;
-	}
+	if (index == 0 || clk_sel == -1)
+		return cv1800_clk_setbit(&mmux->common, &mmux->bypass);
 
-	cv1800_clk_clearbit(&mmux->common, &mmux->bypass);
-
-	if (clk_sel)
-		cv1800_clk_clearbit(&mmux->common, &mmux->clk_sel);
-	else
-		cv1800_clk_setbit(&mmux->common, &mmux->clk_sel);
+	mux = &mmux->mux[clk_sel];
+	for (mux_index = 0; mux_index < BIT(mux->width); mux_index++)
+		if (mmux->sel2parent[clk_sel][mux_index] == index)
+			break;
+	if (mux_index == BIT(mux->width))
+		return -EINVAL;
 
 	spin_lock_irqsave(mmux->common.lock, flags);
 
-	mux = &mmux->mux[clk_sel];
 	reg = readl(mmux->common.base + mux->reg);
-	reg = cv1800_clk_regfield_set(reg, index, mux);
+	reg = cv1800_clk_regfield_set(reg, mux_index, mux);
 
 	writel(reg, mmux->common.base + mux->reg);
 
 	spin_unlock_irqrestore(mmux->common.lock, flags);
 
-release:
-	return 0;
+	/* Program the chosen lane before selecting it and leaving bypass. */
+	if (clk_sel)
+		cv1800_clk_clearbit(&mmux->common, &mmux->clk_sel);
+	else
+		cv1800_clk_setbit(&mmux->common, &mmux->clk_sel);
+
+	return cv1800_clk_clearbit(&mmux->common, &mmux->bypass);
 }
 
 const struct clk_ops cv1800_clk_mmux_ops = {
