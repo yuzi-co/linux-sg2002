@@ -714,21 +714,72 @@ static int mmux_set_rate(struct clk_hw *hw, unsigned long rate,
 			 unsigned long parent_rate)
 {
 	struct cv1800_clk_mmux *mmux = hw_to_cv1800_clk_mmux(hw);
-	struct cv1800_clk_regfield *div;
-	unsigned long val;
+	struct cv1800_clk_regfield *div, *temporary_div, *temporary_mux;
+	struct clk_hw *temporary_parent;
+	unsigned long temporary_rate, limit, flags;
+	u32 saved, reg, select, val, temporary_val;
+	unsigned int lane, temporary_lane;
+	int ret;
+
+	if (!rate || !parent_rate)
+		return -EINVAL;
 
 	if (cv1800_clk_checkbit(&mmux->common, &mmux->bypass))
 		return 0;
 
-	if (cv1800_clk_checkbit(&mmux->common, &mmux->clk_sel))
-		div = &mmux->div[0];
-	else
-		div = &mmux->div[1];
+	lane = cv1800_clk_checkbit(&mmux->common, &mmux->clk_sel) ? 0 : 1;
+	div = &mmux->div[lane];
+	ret = divider_get_val(rate, parent_rate, NULL, div->width, div->flags);
+	if (ret < 0)
+		return ret;
+	val = ret;
+	if (val == div_helper_get_clockdiv(&mmux->common, div))
+		return 0;
 
-	val = divider_get_val(rate, parent_rate, NULL,
-			      div->width, div->flags);
+	/*
+	 * The CPU clock cannot be gated, and its active divider must not be
+	 * rewritten. Use the other divider lane while updating it (SG200X
+	 * TRM, "IP/SYS clock source and clock division configuration").
+	 * Both lane-zero's first PLL and lane-one's FPLL are critical clocks.
+	 * Do not retune either PLL or exceed either endpoint frequency.
+	 */
+	temporary_lane = !lane;
+	temporary_div = &mmux->div[temporary_lane];
+	temporary_mux = &mmux->mux[temporary_lane];
+	temporary_parent = clk_hw_get_parent_by_index(hw,
+					mmux->sel2parent[temporary_lane][0]);
+	if (!temporary_parent || !clk_hw_is_enabled(temporary_parent))
+		return -EINVAL;
+	temporary_rate = clk_hw_get_rate(temporary_parent);
+	limit = min(rate, mmux_recalc_rate(hw, parent_rate));
+	if (!temporary_rate || !limit)
+		return -EINVAL;
+	temporary_val = DIV_ROUND_UP_ULL(temporary_rate, limit);
+	if (temporary_val > GENMASK(temporary_div->width - 1, 0))
+		return -ERANGE;
 
-	return div_helper_set_rate(&mmux->common, div, val);
+	spin_lock_irqsave(mmux->common.lock, flags);
+	saved = readl(mmux->common.base + temporary_div->reg);
+	reg = cv1800_clk_regfield_set(saved, temporary_val, temporary_div);
+	reg = cv1800_clk_regfield_set(reg, 0, temporary_mux);
+	writel(DIV_SET_EN_DIV_FACTOR(reg), mmux->common.base + temporary_div->reg);
+	/* Complete the inactive-lane update before selecting it. */
+	readl(mmux->common.base + temporary_div->reg);
+	select = readl(mmux->common.base + mmux->clk_sel.reg);
+	writel(select ^ BIT(mmux->clk_sel.shift),
+	       mmux->common.base + mmux->clk_sel.reg);
+	readl(mmux->common.base + mmux->clk_sel.reg);
+
+	reg = readl(mmux->common.base + div->reg);
+	reg = cv1800_clk_regfield_set(reg, val, div);
+	writel(DIV_SET_EN_DIV_FACTOR(reg), mmux->common.base + div->reg);
+	readl(mmux->common.base + div->reg);
+	writel(select, mmux->common.base + mmux->clk_sel.reg);
+	readl(mmux->common.base + mmux->clk_sel.reg);
+	writel(saved, mmux->common.base + temporary_div->reg);
+	spin_unlock_irqrestore(mmux->common.lock, flags);
+
+	return 0;
 }
 
 static u8 mmux_get_parent(struct clk_hw *hw)
