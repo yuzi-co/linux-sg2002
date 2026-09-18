@@ -87,7 +87,7 @@ static int ipll_find_rate(const struct cv1800_clk_pll_limit *limit,
 
 static int ipll_determine_rate(struct clk_hw *hw, struct clk_rate_request *req)
 {
-	u32 val;
+	u32 val = 0;
 	struct cv1800_clk_pll *pll = hw_to_cv1800_clk_pll(hw);
 
 	return ipll_find_rate(pll->pll_limit, req->best_parent_rate,
@@ -133,8 +133,11 @@ static int ipll_set_rate(struct clk_hw *hw, unsigned long rate,
 	u32 regval, detected = 0;
 	unsigned long flags;
 	struct cv1800_clk_pll *pll = hw_to_cv1800_clk_pll(hw);
+	int ret;
 
-	ipll_find_rate(pll->pll_limit, parent_rate, &rate, &detected);
+	ret = ipll_find_rate(pll->pll_limit, parent_rate, &rate, &detected);
+	if (ret)
+		return ret;
 	pll_get_mode_ctrl(PLL_GET_DIV_SEL(detected),
 			  ipll_check_mode_ctrl_restrict,
 			  pll->pll_limit, &detected);
@@ -148,10 +151,8 @@ static int ipll_set_rate(struct clk_hw *hw, unsigned long rate,
 
 	spin_unlock_irqrestore(pll->common.lock, flags);
 
-	cv1800_clk_wait_for_lock(&pll->common, pll->pll_status.reg,
-			      BIT(pll->pll_status.shift));
-
-	return 0;
+	return cv1800_clk_wait_for_lock(&pll->common, pll->pll_status.reg,
+				      BIT(pll->pll_status.shift));
 }
 
 static int pll_enable(struct clk_hw *hw)
@@ -377,10 +378,8 @@ static int fpll_set_rate(struct clk_hw *hw, unsigned long rate,
 
 	spin_unlock_irqrestore(pll->common.lock, flags);
 
-	cv1800_clk_wait_for_lock(&pll->common, pll->pll_status.reg,
-			      BIT(pll->pll_status.shift));
-
-	return 0;
+	return cv1800_clk_wait_for_lock(&pll->common, pll->pll_status.reg,
+				      BIT(pll->pll_status.shift));
 }
 
 static u8 fpll_get_parent(struct clk_hw *hw)
