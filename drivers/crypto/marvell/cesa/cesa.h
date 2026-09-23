@@ -300,11 +300,11 @@ struct mv_cesa_tdma_desc {
 	__le32 byte_cnt;
 	union {
 		__le32 src;
-		dma_addr_t src_dma;
+		u32 src_dma;
 	};
 	union {
 		__le32 dst;
-		dma_addr_t dst_dma;
+		u32 dst_dma;
 	};
 	__le32 next_dma;
 
@@ -439,8 +439,10 @@ struct mv_cesa_dev {
  *			SRAM
  * @queue:		fifo of the pending crypto requests
  * @load:		engine load counter, useful for load balancing
- * @chain:		list of the current tdma descriptors being processed
- *			by this engine.
+ * @chain_hw:		list of the current tdma descriptors being processed
+ *			by the hardware.
+ * @chain_sw:		list of the current tdma descriptors that will be
+ *			submitted to the hardware.
  * @complete_queue:	fifo of the processed requests by the engine
  *
  * Structure storing CESA engine information.
@@ -459,7 +461,8 @@ struct mv_cesa_engine {
 	struct gen_pool *pool;
 	struct crypto_queue queue;
 	atomic_t load;
-	struct mv_cesa_tdma_chain chain;
+	struct mv_cesa_tdma_chain chain_hw;
+	struct mv_cesa_tdma_chain chain_sw;
 	struct list_head complete_queue;
 	int irq;
 };

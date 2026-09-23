@@ -52,7 +52,7 @@ enum vas_cop_type {
  * Receive window attributes specified by the (in-kernel) owner of window.
  */
 struct vas_rx_win_attr {
-	void *rx_fifo;
+	u64 rx_fifo;
 	int rx_fifo_size;
 	int wcreds_max;
 
@@ -161,6 +161,9 @@ int vas_copy_crb(void *crb, int offset);
  * assumed to be true for NX windows.
  */
 int vas_paste_crb(struct vas_window *win, int offset, bool re);
+
+void vas_win_paste_addr(struct vas_window *window, u64 *addr,
+			int *len);
 
 /*
  * Register / unregister coprocessor type to VAS API which will be exported

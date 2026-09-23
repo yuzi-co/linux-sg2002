@@ -231,10 +231,23 @@ static void cpu_ready_for_interrupts(void)
 	 * If we are not in hypervisor mode the job is done once for
 	 * the whole partition in configure_exceptions().
 	 */
-	if (cpu_has_feature(CPU_FTR_HVMODE) &&
-	    cpu_has_feature(CPU_FTR_ARCH_207S)) {
+	if (cpu_has_feature(CPU_FTR_HVMODE)) {
 		unsigned long lpcr = mfspr(SPRN_LPCR);
-		mtspr(SPRN_LPCR, lpcr | LPCR_AIL_3);
+		unsigned long new_lpcr = lpcr;
+
+		if (cpu_has_feature(CPU_FTR_ARCH_31)) {
+			/* P10 DD1 does not have HAIL */
+			if (pvr_version_is(PVR_POWER10) &&
+					(mfspr(SPRN_PVR) & 0xf00) == 0x100)
+				new_lpcr |= LPCR_AIL_3;
+			else
+				new_lpcr |= LPCR_HAIL;
+		} else if (cpu_has_feature(CPU_FTR_ARCH_207S)) {
+			new_lpcr |= LPCR_AIL_3;
+		}
+
+		if (new_lpcr != lpcr)
+			mtspr(SPRN_LPCR, new_lpcr);
 	}
 
 	/*
@@ -355,10 +368,10 @@ void __init early_setup(unsigned long dt_ptr)
 	apply_feature_fixups();
 	setup_feature_keys();
 
-	early_ioremap_setup();
-
 	/* Initialize the hash table or TLB handling */
 	early_init_mmu();
+
+	early_ioremap_setup();
 
 	/*
 	 * After firmware and early platform setup code has set things up,
@@ -811,6 +824,7 @@ static int pcpu_cpu_distance(unsigned int from, unsigned int to)
 
 unsigned long __per_cpu_offset[NR_CPUS] __read_mostly;
 EXPORT_SYMBOL(__per_cpu_offset);
+DEFINE_STATIC_KEY_FALSE(__percpu_first_chunk_is_paged);
 
 static void __init pcpu_populate_pte(unsigned long addr)
 {
@@ -890,6 +904,7 @@ void __init setup_per_cpu_areas(void)
 	if (rc < 0)
 		panic("cannot initialize percpu area (err=%d)", rc);
 
+	static_key_enable(&__percpu_first_chunk_is_paged.key);
 	delta = (unsigned long)pcpu_base_addr - (unsigned long)__per_cpu_start;
 	for_each_possible_cpu(cpu) {
                 __per_cpu_offset[cpu] = delta + pcpu_unit_offsets[cpu];

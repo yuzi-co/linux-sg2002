@@ -443,14 +443,18 @@ software_node_get_next_child(const struct fwnode_handle *fwnode,
 	struct swnode *c = to_swnode(child);
 
 	if (!p || list_empty(&p->children) ||
-	    (c && list_is_last(&c->entry, &p->children)))
+	    (c && list_is_last(&c->entry, &p->children))) {
+		fwnode_handle_put(child);
 		return NULL;
+	}
 
 	if (c)
 		c = list_next_entry(c, entry);
 	else
 		c = list_first_entry(&p->children, struct swnode, entry);
-	return &c->fwnode;
+
+	fwnode_handle_put(child);
+	return fwnode_handle_get(&c->fwnode);
 }
 
 static struct fwnode_handle *
@@ -504,7 +508,7 @@ software_node_get_reference_args(const struct fwnode_handle *fwnode,
 	if (prop->is_inline)
 		return -EINVAL;
 
-	if (index * sizeof(*ref) >= prop->length)
+	if (index >= prop->length / sizeof(*ref))
 		return -ENOENT;
 
 	ref_array = prop->pointer;
@@ -515,7 +519,7 @@ software_node_get_reference_args(const struct fwnode_handle *fwnode,
 		return -ENOENT;
 
 	if (nargs_prop) {
-		error = property_entry_read_int_array(swnode->node->properties,
+		error = property_entry_read_int_array(ref->node->properties,
 						      nargs_prop, sizeof(u32),
 						      &nargs_prop_val, 1);
 		if (error)
@@ -526,6 +530,9 @@ software_node_get_reference_args(const struct fwnode_handle *fwnode,
 
 	if (nargs > NR_FWNODE_REFERENCE_ARGS)
 		return -EINVAL;
+
+	if (!args)
+		return 0;
 
 	args->fwnode = software_node_get(refnode);
 	args->nargs = nargs;
@@ -781,6 +788,9 @@ int software_node_register(const struct software_node *node)
 
 	if (software_node_to_swnode(node))
 		return -EEXIST;
+
+	if (node->parent && !parent)
+		return -EINVAL;
 
 	return PTR_ERR_OR_ZERO(swnode_register(node, parent, 0));
 }

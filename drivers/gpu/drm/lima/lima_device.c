@@ -357,6 +357,7 @@ int lima_device_init(struct lima_device *ldev)
 	int err, i;
 
 	dma_set_coherent_mask(ldev->dev, DMA_BIT_MASK(32));
+	dma_set_max_seg_size(ldev->dev, UINT_MAX);
 
 	err = lima_clk_init(ldev);
 	if (err)
@@ -365,12 +366,6 @@ int lima_device_init(struct lima_device *ldev)
 	err = lima_regulator_init(ldev);
 	if (err)
 		goto err_out0;
-
-	ldev->empty_vm = lima_vm_create(ldev);
-	if (!ldev->empty_vm) {
-		err = -ENOMEM;
-		goto err_out1;
-	}
 
 	ldev->va_start = 0;
 	if (ldev->id == lima_gpu_mali450) {
@@ -384,6 +379,12 @@ int lima_device_init(struct lima_device *ldev)
 		}
 	} else
 		ldev->va_end = LIMA_VA_RESERVE_END;
+
+	ldev->empty_vm = lima_vm_create(ldev);
+	if (!ldev->empty_vm) {
+		err = -ENOMEM;
+		goto err_out1;
+	}
 
 	ldev->iomem = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(ldev->iomem)) {

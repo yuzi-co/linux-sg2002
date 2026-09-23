@@ -80,8 +80,11 @@ static ssize_t isl68137_avs_enable_show_page(struct i2c_client *client,
 {
 	int val = pmbus_read_byte_data(client, page, PMBUS_OPERATION);
 
-	return sprintf(buf, "%d\n",
-		       (val & ISL68137_VOUT_AVS) == ISL68137_VOUT_AVS ? 1 : 0);
+	if (val < 0)
+		return val;
+
+	return sysfs_emit(buf, "%d\n",
+			   (val & ISL68137_VOUT_AVS) == ISL68137_VOUT_AVS);
 }
 
 static ssize_t isl68137_avs_enable_store_page(struct i2c_client *client,
@@ -244,8 +247,8 @@ static int isl68137_probe(struct i2c_client *client)
 		info->read_word_data = raa_dmpvr2_read_word_data;
 		break;
 	case raa_dmpvr2_2rail_nontc:
-		info->func[0] &= ~PMBUS_HAVE_TEMP;
-		info->func[1] &= ~PMBUS_HAVE_TEMP;
+		info->func[0] &= ~PMBUS_HAVE_TEMP3;
+		info->func[1] &= ~PMBUS_HAVE_TEMP3;
 		fallthrough;
 	case raa_dmpvr2_2rail:
 		info->pages = 2;

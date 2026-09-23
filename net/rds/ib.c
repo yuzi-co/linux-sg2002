@@ -30,7 +30,6 @@
  * SOFTWARE.
  *
  */
-#include <linux/dmapool.h>
 #include <linux/kernel.h>
 #include <linux/in.h>
 #include <linux/if.h>
@@ -108,7 +107,6 @@ static void rds_ib_dev_free(struct work_struct *work)
 		rds_ib_destroy_mr_pool(rds_ibdev->mr_1m_pool);
 	if (rds_ibdev->pd)
 		ib_dealloc_pd(rds_ibdev->pd);
-	dma_pool_destroy(rds_ibdev->rid_hdrs_pool);
 
 	list_for_each_entry_safe(i_ipaddr, i_next, &rds_ibdev->ipaddr_list, list) {
 		list_del(&i_ipaddr->list);
@@ -189,14 +187,6 @@ static int rds_ib_add_one(struct ib_device *device)
 	if (IS_ERR(rds_ibdev->pd)) {
 		ret = PTR_ERR(rds_ibdev->pd);
 		rds_ibdev->pd = NULL;
-		goto put_dev;
-	}
-	rds_ibdev->rid_hdrs_pool = dma_pool_create(device->name,
-						   device->dma_device,
-						   sizeof(struct rds_header),
-						   L1_CACHE_BYTES, 0);
-	if (!rds_ibdev->rid_hdrs_pool) {
-		ret = -ENOMEM;
 		goto put_dev;
 	}
 
@@ -413,8 +403,8 @@ static void rds6_ib_ic_info(struct socket *sock, unsigned int len,
  * allowed to influence which paths have priority.  We could call userspace
  * asserting this policy "routing".
  */
-static int rds_ib_laddr_check(struct net *net, const struct in6_addr *addr,
-			      __u32 scope_id)
+static int rds_ib_laddr_check_cm(struct net *net, const struct in6_addr *addr,
+				 __u32 scope_id)
 {
 	int ret;
 	struct rdma_cm_id *cm_id;
@@ -441,6 +431,10 @@ static int rds_ib_laddr_check(struct net *net, const struct in6_addr *addr,
 		sa = (struct sockaddr *)&sin;
 	} else {
 #if IS_ENABLED(CONFIG_IPV6)
+		if (!ipv6_mod_enabled()) {
+			ret = -EADDRNOTAVAIL;
+			goto out;
+		}
 		memset(&sin6, 0, sizeof(sin6));
 		sin6.sin6_family = AF_INET6;
 		sin6.sin6_addr = *addr;
@@ -497,6 +491,26 @@ out:
 	rdma_destroy_id(cm_id);
 
 	return ret;
+}
+
+static int rds_ib_laddr_check(struct net *net, const struct in6_addr *addr,
+			      __u32 scope_id)
+{
+	struct rds_ib_device *rds_ibdev = NULL;
+
+	/* RDS/IB is restricted to the initial network namespace */
+	if (!net_eq(net, &init_net))
+		return -EPROTOTYPE;
+
+	if (ipv6_addr_v4mapped(addr)) {
+		rds_ibdev = rds_ib_get_device(addr->s6_addr32[3]);
+		if (rds_ibdev) {
+			rds_ib_dev_put(rds_ibdev);
+			return 0;
+		}
+	}
+
+	return rds_ib_laddr_check_cm(net, addr, scope_id);
 }
 
 static void rds_ib_unregister_client(void)

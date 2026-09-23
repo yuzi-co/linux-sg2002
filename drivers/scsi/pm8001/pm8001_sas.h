@@ -69,45 +69,16 @@
 #define PM8001_DEV_LOGGING	0x80 /* development message logging */
 #define PM8001_DEVIO_LOGGING	0x100 /* development io message logging */
 #define PM8001_IOERR_LOGGING	0x200 /* development io err message logging */
-#define pm8001_printk(format, arg...)	pr_info("%s:: %s  %d:" \
-			format, pm8001_ha->name, __func__, __LINE__, ## arg)
-#define PM8001_CHECK_LOGGING(HBA, LEVEL, CMD)	\
-do {						\
-	if (unlikely(HBA->logging_level & LEVEL))	\
-		do {					\
-			CMD;				\
-		} while (0);				\
-} while (0);
 
-#define PM8001_EH_DBG(HBA, CMD)			\
-	PM8001_CHECK_LOGGING(HBA, PM8001_EH_LOGGING, CMD)
+#define pm8001_printk(fmt, ...)						\
+	pr_info("%s:: %s  %d:" fmt,					\
+		pm8001_ha->name, __func__, __LINE__, ##__VA_ARGS__)
 
-#define PM8001_INIT_DBG(HBA, CMD)		\
-	PM8001_CHECK_LOGGING(HBA, PM8001_INIT_LOGGING, CMD)
-
-#define PM8001_DISC_DBG(HBA, CMD)		\
-	PM8001_CHECK_LOGGING(HBA, PM8001_DISC_LOGGING, CMD)
-
-#define PM8001_IO_DBG(HBA, CMD)		\
-	PM8001_CHECK_LOGGING(HBA, PM8001_IO_LOGGING, CMD)
-
-#define PM8001_FAIL_DBG(HBA, CMD)		\
-	PM8001_CHECK_LOGGING(HBA, PM8001_FAIL_LOGGING, CMD)
-
-#define PM8001_IOCTL_DBG(HBA, CMD)		\
-	PM8001_CHECK_LOGGING(HBA, PM8001_IOCTL_LOGGING, CMD)
-
-#define PM8001_MSG_DBG(HBA, CMD)		\
-	PM8001_CHECK_LOGGING(HBA, PM8001_MSG_LOGGING, CMD)
-
-#define PM8001_DEV_DBG(HBA, CMD)		\
-	PM8001_CHECK_LOGGING(HBA, PM8001_DEV_LOGGING, CMD)
-
-#define PM8001_DEVIO_DBG(HBA, CMD)		\
-	PM8001_CHECK_LOGGING(HBA, PM8001_DEVIO_LOGGING, CMD)
-
-#define PM8001_IOERR_DBG(HBA, CMD)		\
-	PM8001_CHECK_LOGGING(HBA, PM8001_IOERR_LOGGING, CMD)
+#define pm8001_dbg(HBA, level, fmt, ...)				\
+do {									\
+	if (unlikely((HBA)->logging_level & PM8001_##level##_LOGGING))	\
+		pm8001_printk(fmt, ##__VA_ARGS__);			\
+} while (0)
 
 #define PM8001_USE_TASKLET
 #define PM8001_USE_MSIX
@@ -293,7 +264,7 @@ struct pm8001_device {
 	struct completion	*dcompletion;
 	struct completion	*setds_completion;
 	u32			device_id;
-	u32			running_req;
+	atomic_t		running_req;
 };
 
 struct pm8001_prd_imt {
@@ -544,6 +515,7 @@ struct pm8001_hba_info {
 	u32			iomb_size; /* SPC and SPCV IOMB size */
 	struct pm8001_device	*devices;
 	struct pm8001_ccb_info	*ccb_info;
+	u32			ccb_count;
 #ifdef PM8001_USE_MSIX
 	int			number_of_intr;/*will be used in remove()*/
 	char			intr_drvname[PM8001_MAX_MSIX_VEC]
@@ -568,6 +540,10 @@ struct pm8001_hba_info {
 	u32 ci_offset;
 	u32 pi_offset;
 	u32 max_memcnt;
+	u32 iop_log_start;
+	u32 iop_log_end;
+	u32 iop_log_count;
+	struct mutex iop_log_lock;
 };
 
 struct pm8001_work {

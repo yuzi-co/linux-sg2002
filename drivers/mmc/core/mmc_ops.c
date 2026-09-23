@@ -452,7 +452,7 @@ static int mmc_busy_status(struct mmc_card *card, bool retry_crc_err,
 	u32 status = 0;
 	int err;
 
-	if (host->ops->card_busy) {
+	if (busy_cmd != MMC_BUSY_IO && host->ops->card_busy) {
 		*busy = host->ops->card_busy(host);
 		return 0;
 	}
@@ -473,6 +473,7 @@ static int mmc_busy_status(struct mmc_card *card, bool retry_crc_err,
 		err = R1_STATUS(status) ? -EIO : 0;
 		break;
 	case MMC_BUSY_HPI:
+	case MMC_BUSY_IO:
 		break;
 	default:
 		err = -EINVAL;
@@ -988,9 +989,7 @@ int mmc_flush_cache(struct mmc_card *card)
 {
 	int err = 0;
 
-	if (mmc_card_mmc(card) &&
-			(card->ext_csd.cache_size > 0) &&
-			(card->ext_csd.cache_ctrl & 1)) {
+	if (mmc_cache_enabled(card->host)) {
 		err = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL,
 				 EXT_CSD_FLUSH_CACHE, 1,
 				 MMC_CACHE_FLUSH_TIMEOUT_MS);
