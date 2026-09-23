@@ -92,6 +92,7 @@
 #define MEI_DEV_ID_CDF        0x18D3  /* Cedar Fork */
 
 #define MEI_DEV_ID_ICP_LP     0x34E0  /* Ice Lake Point LP */
+#define MEI_DEV_ID_ICP_N      0x38E0  /* Ice Lake Point N */
 
 #define MEI_DEV_ID_JSP_N      0x4DE0  /* Jasper Lake Point N */
 
@@ -100,6 +101,28 @@
 
 #define MEI_DEV_ID_MCC        0x4B70  /* Mule Creek Canyon (EHL) */
 #define MEI_DEV_ID_MCC_4      0x4B75  /* Mule Creek Canyon 4 (EHL) */
+
+#define MEI_DEV_ID_EBG        0x1BE0  /* Emmitsburg WS */
+
+#define MEI_DEV_ID_ADP_S      0x7AE8  /* Alder Lake Point S */
+#define MEI_DEV_ID_ADP_LP     0x7A60  /* Alder Lake Point LP */
+#define MEI_DEV_ID_ADP_P      0x51E0  /* Alder Lake Point P */
+#define MEI_DEV_ID_ADP_N      0x54E0  /* Alder Lake Point N */
+
+#define MEI_DEV_ID_RPL_S      0x7A68  /* Raptor Lake Point S */
+
+#define MEI_DEV_ID_MTL_M      0x7E70  /* Meteor Lake Point M */
+#define MEI_DEV_ID_ARL_S      0x7F68  /* Arrow Lake Point S */
+#define MEI_DEV_ID_ARL_H      0x7770  /* Arrow Lake Point H */
+
+#define MEI_DEV_ID_LNL_M      0xA870  /* Lunar Lake Point M */
+
+#define MEI_DEV_ID_PTL_H      0xE370  /* Panther Lake H */
+#define MEI_DEV_ID_PTL_P      0xE470  /* Panther Lake P */
+
+#define MEI_DEV_ID_WCL_P      0x4D70  /* Wildcat Lake P */
+
+#define MEI_DEV_ID_NVL_S      0x6E68  /* Nova Lake Point S */
 
 /*
  * MEI HW Section

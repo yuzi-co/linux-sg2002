@@ -50,6 +50,7 @@ static void led_blink(struct timer_list *unused)
 	add_timer(&led_blink_timer);
 }
 
+#ifdef CONFIG_PROC_FS
 static int led_proc_show(struct seq_file *m, void *v)
 {
 	if (get_auxio() & AUXIO_LED)
@@ -77,7 +78,7 @@ static ssize_t led_proc_write(struct file *file, const char __user *buffer,
 		return PTR_ERR(buf);
 
 	/* work around \n when echo'ing into proc */
-	if (buf[count - 1] == '\n')
+	if (count > 0 && buf[count - 1] == '\n')
 		buf[count - 1] = '\0';
 
 	/* before we change anything we want to stop any running timers,
@@ -111,6 +112,7 @@ static const struct proc_ops led_proc_ops = {
 	.proc_release	= single_release,
 	.proc_write	= led_proc_write,
 };
+#endif
 
 static struct proc_dir_entry *led;
 

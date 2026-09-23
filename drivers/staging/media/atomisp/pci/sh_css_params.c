@@ -16,12 +16,10 @@
 #include "gdc_device.h"		/* gdc_lut_store(), ... */
 #include "isp.h"			/* ISP_VEC_ELEMBITS */
 #include "vamem.h"
-#if !defined(HAS_NO_HMEM)
 #ifndef __INLINE_HMEM__
 #define __INLINE_HMEM__
 #endif
 #include "hmem.h"
-#endif /* !defined(HAS_NO_HMEM) */
 #define IA_CSS_INCLUDE_PARAMETERS
 #define IA_CSS_INCLUDE_ACC_PARAMETERS
 
@@ -1513,10 +1511,8 @@ ia_css_translate_3a_statistics(
 		ia_css_s3a_vmem_decode(host_stats, isp_stats->vmem_stats_hi,
 				       isp_stats->vmem_stats_lo);
 	}
-#if !defined(HAS_NO_HMEM)
 	IA_CSS_LOG("3A: HMEM");
 	ia_css_s3a_hmem_decode(host_stats, isp_stats->hmem_stats);
-#endif
 
 	IA_CSS_LEAVE("void");
 }
@@ -2255,9 +2251,7 @@ ia_css_isp_3a_statistics_allocate(const struct ia_css_3a_grid_info *grid)
 		me->vmem_size = ISP_S3ATBL_HI_LO_STRIDE_BYTES *
 				grid->aligned_height;
 	}
-#if !defined(HAS_NO_HMEM)
 	me->hmem_size = sizeof_hmem(HMEM0_ID);
-#endif
 
 	/* All subsections need to be aligned to the system bus width */
 	me->dmem_size = CEIL_MUL(me->dmem_size, HIVE_ISP_DDR_WORD_BYTES);
@@ -2437,7 +2431,7 @@ sh_css_create_isp_params(struct ia_css_stream *stream,
 	unsigned int i;
 	struct sh_css_ddr_address_map *ddr_ptrs;
 	struct sh_css_ddr_address_map_size *ddr_ptrs_size;
-	int err = 0;
+	int err;
 	size_t params_size;
 	struct ia_css_isp_parameters *params =
 	kvmalloc(sizeof(struct ia_css_isp_parameters), GFP_KERNEL);
@@ -2482,7 +2476,11 @@ sh_css_create_isp_params(struct ia_css_stream *stream,
 	succ &= (ddr_ptrs->macc_tbl != mmgr_NULL);
 
 	*isp_params_out = params;
-	return err;
+
+	if (!succ)
+		return -ENOMEM;
+
+	return 0;
 }
 
 static bool
@@ -4356,12 +4354,10 @@ ia_css_3a_statistics_allocate(const struct ia_css_3a_grid_info *grid)
 	me->data = kvmalloc(grid_size * sizeof(*me->data), GFP_KERNEL);
 	if (!me->data)
 		goto err;
-#if !defined(HAS_NO_HMEM)
 	/* No weighted histogram, no structure, treat the histogram data as a byte dump in a byte array */
 	me->rgby_data = kvmalloc(sizeof_hmem(HMEM0_ID), GFP_KERNEL);
-#else
-	me->rgby_data = NULL;
-#endif
+	if (!me->rgby_data)
+		goto err;
 
 	IA_CSS_LEAVE("return=%p", me);
 	return me;

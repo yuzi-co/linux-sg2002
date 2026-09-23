@@ -290,6 +290,7 @@ static netdev_tx_t brcmf_netdev_start_xmit(struct sk_buff *skb,
 	struct brcmf_pub *drvr = ifp->drvr;
 	struct ethhdr *eh;
 	int head_delta;
+	unsigned int tx_bytes = skb->len;
 
 	brcmf_dbg(DATA, "Enter, bsscfgidx=%d\n", ifp->bsscfgidx);
 
@@ -332,6 +333,7 @@ static netdev_tx_t brcmf_netdev_start_xmit(struct sk_buff *skb,
 			bphy_err(drvr, "%s: failed to expand headroom\n",
 				 brcmf_ifname(ifp));
 			atomic_inc(&drvr->bus_if->stats.pktcow_failed);
+			dev_kfree_skb(skb);
 			goto done;
 		}
 	}
@@ -364,7 +366,7 @@ done:
 		ndev->stats.tx_dropped++;
 	} else {
 		ndev->stats.tx_packets++;
-		ndev->stats.tx_bytes += skb->len;
+		ndev->stats.tx_bytes += tx_bytes;
 	}
 
 	/* Return ok: we always eat the packet */
@@ -542,6 +544,11 @@ void brcmf_txfinalize(struct brcmf_if *ifp, struct sk_buff *txp, bool success)
 {
 	struct ethhdr *eh;
 	u16 type;
+
+	if (!ifp) {
+		brcmu_pkt_buf_free_skb(txp);
+		return;
+	}
 
 	eh = (struct ethhdr *)(txp->data);
 	type = ntohs(eh->h_proto);
@@ -1159,6 +1166,35 @@ static int brcmf_revinfo_read(struct seq_file *s, void *data)
 	return 0;
 }
 
+/*
+ * Serialize arming from debugfs reset and brcmf_fw_crashed() against
+ * teardown.  The remove path sets ->removing and drains the work while
+ * holding bus_reset_lock, so a racing armer is either drained or skips it.
+ */
+static void brcmf_bus_schedule_reset(struct brcmf_bus *bus_if)
+{
+	mutex_lock(&bus_if->bus_reset_lock);
+	if (bus_if->drvr && bus_if->drvr->bus_reset.func && !bus_if->removing)
+		schedule_work(&bus_if->drvr->bus_reset);
+	mutex_unlock(&bus_if->bus_reset_lock);
+}
+
+void brcmf_bus_cancel_reset_work(struct brcmf_bus *bus_if)
+{
+	mutex_lock(&bus_if->bus_reset_lock);
+	bus_if->removing = true;
+	if (bus_if->drvr)
+		cancel_work_sync(&bus_if->drvr->bus_reset);
+	mutex_unlock(&bus_if->bus_reset_lock);
+}
+
+void brcmf_bus_allow_reset_work(struct brcmf_bus *bus_if)
+{
+	mutex_lock(&bus_if->bus_reset_lock);
+	bus_if->removing = false;
+	mutex_unlock(&bus_if->bus_reset_lock);
+}
+
 static void brcmf_core_bus_reset(struct work_struct *work)
 {
 	struct brcmf_pub *drvr = container_of(work, struct brcmf_pub,
@@ -1179,7 +1215,7 @@ static ssize_t bus_reset_write(struct file *file, const char __user *user_buf,
 	if (value != 1)
 		return -EINVAL;
 
-	schedule_work(&drvr->bus_reset);
+	brcmf_bus_schedule_reset(drvr->bus_if);
 
 	return count;
 }
@@ -1397,13 +1433,23 @@ void brcmf_dev_coredump(struct device *dev)
 void brcmf_fw_crashed(struct device *dev)
 {
 	struct brcmf_bus *bus_if = dev_get_drvdata(dev);
-	struct brcmf_pub *drvr = bus_if->drvr;
+	struct brcmf_pub *drvr;
+
+	/* May fire before brcmf_attach() wires up drvr, or after removal
+	 * has cleared it; guard the derefs below (and the arming gate in
+	 * brcmf_bus_schedule_reset() already checks drvr/->removing).
+	 */
+	if (!bus_if)
+		return;
+	drvr = bus_if->drvr;
+	if (!drvr)
+		return;
 
 	bphy_err(drvr, "Firmware has halted or crashed\n");
 
 	brcmf_dev_coredump(dev);
 
-	schedule_work(&drvr->bus_reset);
+	brcmf_bus_schedule_reset(bus_if);
 }
 
 void brcmf_detach(struct device *dev)
@@ -1518,40 +1564,34 @@ void brcmf_bus_change_state(struct brcmf_bus *bus, enum brcmf_bus_state state)
 	}
 }
 
-static void brcmf_driver_register(struct work_struct *work)
-{
-#ifdef CONFIG_BRCMFMAC_SDIO
-	brcmf_sdio_register();
-#endif
-#ifdef CONFIG_BRCMFMAC_USB
-	brcmf_usb_register();
-#endif
-#ifdef CONFIG_BRCMFMAC_PCIE
-	brcmf_pcie_register();
-#endif
-}
-static DECLARE_WORK(brcmf_driver_work, brcmf_driver_register);
-
 int __init brcmf_core_init(void)
 {
-	if (!schedule_work(&brcmf_driver_work))
-		return -EBUSY;
+	int err;
 
+	err = brcmf_sdio_register();
+	if (err)
+		return err;
+
+	err = brcmf_usb_register();
+	if (err)
+		goto error_usb_register;
+
+	err = brcmf_pcie_register();
+	if (err)
+		goto error_pcie_register;
 	return 0;
+
+error_pcie_register:
+	brcmf_usb_exit();
+error_usb_register:
+	brcmf_sdio_exit();
+	return err;
 }
 
 void __exit brcmf_core_exit(void)
 {
-	cancel_work_sync(&brcmf_driver_work);
-
-#ifdef CONFIG_BRCMFMAC_SDIO
 	brcmf_sdio_exit();
-#endif
-#ifdef CONFIG_BRCMFMAC_USB
 	brcmf_usb_exit();
-#endif
-#ifdef CONFIG_BRCMFMAC_PCIE
 	brcmf_pcie_exit();
-#endif
 }
 

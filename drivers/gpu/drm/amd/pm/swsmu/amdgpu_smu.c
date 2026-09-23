@@ -115,7 +115,7 @@ int smu_get_dpm_freq_range(struct smu_context *smu,
 			   uint32_t *min,
 			   uint32_t *max)
 {
-	int ret = 0;
+	int ret = -ENOTSUPP;
 
 	if (!min && !max)
 		return -EINVAL;
@@ -1332,6 +1332,12 @@ static int smu_resume(void *handle)
 
 	adev->pm.dpm_enabled = true;
 
+	if (smu->current_power_limit) {
+		ret = smu_set_power_limit(smu, smu->current_power_limit);
+		if (ret && ret != -EOPNOTSUPP)
+			return ret;
+	}
+
 	dev_info(adev->dev, "SMU is resumed successfully!\n");
 
 	return 0;
@@ -2001,6 +2007,7 @@ int smu_set_power_limit(struct smu_context *smu, uint32_t limit)
 		dev_err(smu->adev->dev,
 			"New power limit (%d) is over the max allowed %d\n",
 			limit, smu->max_power_limit);
+		ret = -EINVAL;
 		goto out;
 	}
 
@@ -2255,19 +2262,14 @@ int smu_get_fan_speed_percent(struct smu_context *smu, uint32_t *speed)
 int smu_set_fan_speed_percent(struct smu_context *smu, uint32_t speed)
 {
 	int ret = 0;
-	uint32_t rpm;
 
 	if (!smu->pm_enabled || !smu->adev->pm.dpm_enabled)
 		return -EOPNOTSUPP;
 
 	mutex_lock(&smu->mutex);
 
-	if (smu->ppt_funcs->set_fan_speed_rpm) {
-		if (speed > 100)
-			speed = 100;
-		rpm = speed * smu->fan_max_rpm / 100;
-		ret = smu->ppt_funcs->set_fan_speed_rpm(smu, rpm);
-	}
+	if (smu->ppt_funcs->set_fan_speed_percent)
+		ret = smu->ppt_funcs->set_fan_speed_percent(smu, speed);
 
 	mutex_unlock(&smu->mutex);
 

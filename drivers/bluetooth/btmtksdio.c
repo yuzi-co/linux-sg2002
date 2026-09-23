@@ -263,13 +263,12 @@ static int btmtksdio_tx_packet(struct btmtksdio_dev *bdev,
 	struct mtkbtsdio_hdr *sdio_hdr;
 	int err;
 
-	/* Make sure that there are enough rooms for SDIO header */
-	if (unlikely(skb_headroom(skb) < sizeof(*sdio_hdr))) {
-		err = pskb_expand_head(skb, sizeof(*sdio_hdr), 0,
-				       GFP_ATOMIC);
-		if (err < 0)
-			return err;
-	}
+	/* Make sure that the data buffer is not shared with anyone else and
+	 * that there is enough room for the SDIO header
+	 */
+	err = skb_cow_head(skb, sizeof(*sdio_hdr));
+	if (err < 0)
+		return err;
 
 	/* Prepend MediaTek SDIO Specific Header */
 	skb_push(skb, sizeof(*sdio_hdr));
@@ -981,14 +980,14 @@ static int btmtksdio_probe(struct sdio_func *func,
 	hdev->manufacturer = 70;
 	set_bit(HCI_QUIRK_NON_PERSISTENT_SETUP, &hdev->quirks);
 
+	sdio_set_drvdata(func, bdev);
+
 	err = hci_register_dev(hdev);
 	if (err < 0) {
 		dev_err(&func->dev, "Can't register HCI device\n");
 		hci_free_dev(hdev);
 		return err;
 	}
-
-	sdio_set_drvdata(func, bdev);
 
 	/* pm_runtime_enable would be done after the firmware is being
 	 * downloaded because the core layer probably already enables
@@ -1041,6 +1040,8 @@ static int btmtksdio_runtime_suspend(struct device *dev)
 	bdev = sdio_get_drvdata(func);
 	if (!bdev)
 		return 0;
+
+	sdio_set_host_pm_flags(func, MMC_PM_KEEP_POWER);
 
 	sdio_claim_host(bdev->func);
 

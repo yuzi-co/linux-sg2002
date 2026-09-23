@@ -20,6 +20,8 @@ nfp_bpf_cmsg_alloc(struct nfp_app_bpf *bpf, unsigned int size)
 	struct sk_buff *skb;
 
 	skb = nfp_app_ctrl_msg_alloc(bpf->app, size, GFP_KERNEL);
+	if (!skb)
+		return NULL;
 	skb_put(skb, size);
 
 	return skb;
@@ -454,6 +456,7 @@ void nfp_bpf_ctrl_msg_rx(struct nfp_app *app, struct sk_buff *skb)
 			dev_consume_skb_any(skb);
 		else
 			dev_kfree_skb_any(skb);
+		return;
 	}
 
 	nfp_ccm_rx(&bpf->ccm, skb);

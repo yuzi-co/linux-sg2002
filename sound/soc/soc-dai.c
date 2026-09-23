@@ -134,6 +134,69 @@ int snd_soc_dai_set_bclk_ratio(struct snd_soc_dai *dai, unsigned int ratio)
 }
 EXPORT_SYMBOL_GPL(snd_soc_dai_set_bclk_ratio);
 
+int snd_soc_dai_get_fmt_max_priority(struct snd_soc_pcm_runtime *rtd)
+{
+	struct snd_soc_dai *dai;
+	int i, max = 0;
+
+	/*
+	 * return max num if *ALL* DAIs have .auto_selectable_formats
+	 */
+	for_each_rtd_dais(rtd, i, dai) {
+		if (dai->driver->ops &&
+		    dai->driver->ops->num_auto_selectable_formats)
+			max = max(max, dai->driver->ops->num_auto_selectable_formats);
+		else
+			return 0;
+	}
+
+	return max;
+}
+
+/**
+ * snd_soc_dai_get_fmt - get supported audio format.
+ * @dai: DAI
+ * @priority: priority level of supported audio format.
+ *
+ * This should return only formats implemented with high
+ * quality by the DAI so that the core can configure a
+ * format which will work well with other devices.
+ * For example devices which don't support both edges of the
+ * LRCLK signal in I2S style formats should only list DSP
+ * modes.  This will mean that sometimes fewer formats
+ * are reported here than are supported by set_fmt().
+ */
+u64 snd_soc_dai_get_fmt(struct snd_soc_dai *dai, int priority)
+{
+	const struct snd_soc_dai_ops *ops = dai->driver->ops;
+	u64 fmt = 0;
+	int i, max = 0, until = priority;
+
+	/*
+	 * Collect auto_selectable_formats until priority
+	 *
+	 * ex)
+	 *	auto_selectable_formats[] = { A, B, C };
+	 *	(A, B, C = SND_SOC_POSSIBLE_DAIFMT_xxx)
+	 *
+	 * priority = 1 :	A
+	 * priority = 2 :	A | B
+	 * priority = 3 :	A | B | C
+	 * priority = 4 :	A | B | C
+	 * ...
+	 */
+	if (ops)
+		max = ops->num_auto_selectable_formats;
+
+	if (max < until)
+		until = max;
+
+	for (i = 0; i < until; i++)
+		fmt |= ops->auto_selectable_formats[i];
+
+	return fmt;
+}
+
 /**
  * snd_soc_dai_set_fmt - configure DAI hardware audio format.
  * @dai: DAI
@@ -206,12 +269,15 @@ int snd_soc_dai_set_tdm_slot(struct snd_soc_dai *dai,
 {
 	int ret = -ENOTSUPP;
 
-	if (dai->driver->ops &&
-	    dai->driver->ops->xlate_tdm_slot_mask)
-		dai->driver->ops->xlate_tdm_slot_mask(slots,
-						      &tx_mask, &rx_mask);
-	else
-		snd_soc_xlate_tdm_slot_mask(slots, &tx_mask, &rx_mask);
+	if (slots) {
+		if (dai->driver->ops &&
+		    dai->driver->ops->xlate_tdm_slot_mask)
+			ret = dai->driver->ops->xlate_tdm_slot_mask(slots, &tx_mask, &rx_mask);
+		else
+			ret = snd_soc_xlate_tdm_slot_mask(slots, &tx_mask, &rx_mask);
+		if (ret)
+			goto err;
+	}
 
 	dai->tx_mask = tx_mask;
 	dai->rx_mask = rx_mask;
@@ -220,6 +286,7 @@ int snd_soc_dai_set_tdm_slot(struct snd_soc_dai *dai,
 	    dai->driver->ops->set_tdm_slot)
 		ret = dai->driver->ops->set_tdm_slot(dai, tx_mask, rx_mask,
 						      slots, slot_width);
+err:
 	return soc_dai_ret(dai, ret);
 }
 EXPORT_SYMBOL_GPL(snd_soc_dai_set_tdm_slot);
@@ -482,6 +549,9 @@ int snd_soc_pcm_dai_probe(struct snd_soc_pcm_runtime *rtd, int order)
 
 	for_each_rtd_dais(rtd, i, dai) {
 		if (dai->driver->probe_order != order)
+			continue;
+
+		if (dai->probed)
 			continue;
 
 		if (dai->driver->probe) {

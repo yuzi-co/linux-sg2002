@@ -236,7 +236,7 @@ static inline void clwb(volatile void *__p)
 
 #define nop() asm volatile ("nop")
 
-static inline void serialize(void)
+static __always_inline void serialize(void)
 {
 	/* Instruction opcode for SERIALIZE; supported in binutils >= 2.35. */
 	asm volatile(".byte 0xf, 0x1, 0xe8" ::: "memory");
@@ -286,8 +286,8 @@ static inline void movdir64b(void *dst, const void *src)
 static inline int enqcmds(void __iomem *dst, const void *src)
 {
 	const struct { char _[64]; } *__src = src;
-	struct { char _[64]; } *__dst = dst;
-	int zf;
+	struct { char _[64]; } __iomem *__dst = dst;
+	bool zf;
 
 	/*
 	 * ENQCMDS %(rdx), rax

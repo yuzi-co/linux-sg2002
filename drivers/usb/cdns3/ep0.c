@@ -364,7 +364,7 @@ static int cdns3_ep0_feature_handle_endpoint(struct cdns3_device *priv_dev,
 	if (le16_to_cpu(ctrl->wValue) != USB_ENDPOINT_HALT)
 		return -EINVAL;
 
-	if (!(ctrl->wIndex & ~USB_DIR_IN))
+	if (!(le16_to_cpu(ctrl->wIndex) & ~USB_DIR_IN))
 		return 0;
 
 	index = cdns3_ep_addr_to_index(le16_to_cpu(ctrl->wIndex));
@@ -731,6 +731,7 @@ static int cdns3_gadget_ep0_queue(struct usb_ep *ep,
 		request->actual = 0;
 		priv_dev->status_completion_no_call = true;
 		priv_dev->pending_status_request = request;
+		usb_gadget_set_state(&priv_dev->gadget, USB_STATE_CONFIGURED);
 		spin_unlock_irqrestore(&priv_dev->lock, flags);
 
 		/*
@@ -789,7 +790,7 @@ int cdns3_gadget_ep_set_wedge(struct usb_ep *ep)
 	return 0;
 }
 
-const struct usb_ep_ops cdns3_gadget_ep0_ops = {
+static const struct usb_ep_ops cdns3_gadget_ep0_ops = {
 	.enable = cdns3_gadget_ep0_enable,
 	.disable = cdns3_gadget_ep0_disable,
 	.alloc_request = cdns3_gadget_ep_alloc_request,

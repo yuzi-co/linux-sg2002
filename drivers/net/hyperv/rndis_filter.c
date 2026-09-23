@@ -508,8 +508,6 @@ static int rndis_filter_receive_data(struct net_device *ndev,
 	return ret;
 
 drop:
-	/* Drop incomplete packet */
-	nvchan->rsc.cnt = 0;
 	return NVSP_STAT_FAIL;
 }
 
@@ -1172,6 +1170,7 @@ static void netvsc_sc_open(struct vmbus_channel *new_sc)
 	/* Set the channel before opening.*/
 	nvchan->channel = new_sc;
 
+	new_sc->rqstor_size = netvsc_rqstor_size(netvsc_ring_bytes);
 	ret = vmbus_open(new_sc, netvsc_ring_bytes,
 			 netvsc_ring_bytes, NULL, 0,
 			 netvsc_channel_cb, nvchan);

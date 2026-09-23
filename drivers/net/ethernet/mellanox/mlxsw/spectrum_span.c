@@ -157,6 +157,7 @@ mlxsw_sp1_span_entry_cpu_deconfigure(struct mlxsw_sp_span_entry *span_entry)
 
 static const
 struct mlxsw_sp_span_entry_ops mlxsw_sp1_span_entry_ops_cpu = {
+	.is_static = true,
 	.can_handle = mlxsw_sp1_span_cpu_can_handle,
 	.parms_set = mlxsw_sp1_span_entry_cpu_parms,
 	.configure = mlxsw_sp1_span_entry_cpu_configure,
@@ -214,6 +215,7 @@ mlxsw_sp_span_entry_phys_deconfigure(struct mlxsw_sp_span_entry *span_entry)
 
 static const
 struct mlxsw_sp_span_entry_ops mlxsw_sp_span_entry_ops_phys = {
+	.is_static = true,
 	.can_handle = mlxsw_sp_port_dev_check,
 	.parms_set = mlxsw_sp_span_entry_phys_parms,
 	.configure = mlxsw_sp_span_entry_phys_configure,
@@ -420,7 +422,7 @@ mlxsw_sp_span_gretap4_route(const struct net_device *to_dev,
 
 	parms = mlxsw_sp_ipip_netdev_parms4(to_dev);
 	ip_tunnel_init_flow(&fl4, parms.iph.protocol, *daddrp, *saddrp,
-			    0, 0, parms.link, tun->fwmark, 0);
+			    0, 0, dev_net(to_dev), parms.link, tun->fwmark, 0);
 
 	rt = ip_route_output_key(tun->net, &fl4);
 	if (IS_ERR(rt))
@@ -721,6 +723,7 @@ mlxsw_sp2_span_entry_cpu_deconfigure(struct mlxsw_sp_span_entry *span_entry)
 
 static const
 struct mlxsw_sp_span_entry_ops mlxsw_sp2_span_entry_ops_cpu = {
+	.is_static = true,
 	.can_handle = mlxsw_sp2_span_cpu_can_handle,
 	.parms_set = mlxsw_sp2_span_entry_cpu_parms,
 	.configure = mlxsw_sp2_span_entry_cpu_configure,
@@ -1034,6 +1037,9 @@ static void mlxsw_sp_span_respin_work(struct work_struct *work)
 		struct mlxsw_sp_span_parms sparms = {NULL};
 
 		if (!refcount_read(&curr->ref_count))
+			continue;
+
+		if (curr->ops->is_static)
 			continue;
 
 		err = curr->ops->parms_set(mlxsw_sp, curr->to_dev, &sparms);

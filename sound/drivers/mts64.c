@@ -816,6 +816,9 @@ static void snd_mts64_interrupt(void *private)
 	u8 status, data;
 	struct snd_rawmidi_substream *substream;
 
+	if (!mts)
+		return;
+
 	spin_lock(&mts->lock);
 	ret = mts64_read(mts->pardev->port);
 	data = ret & 0x00ff;
@@ -916,6 +919,12 @@ static int snd_mts64_probe(struct platform_device *pdev)
 
 	p = platform_get_drvdata(pdev);
 	platform_set_drvdata(pdev, NULL);
+
+	if (dev < 0) {
+		dev_warn(&pdev->dev,
+			 "Invalid card index %d, using default 0\n", dev);
+		dev = 0;
+	}
 
 	if (dev >= SNDRV_CARDS)
 		return -ENODEV;

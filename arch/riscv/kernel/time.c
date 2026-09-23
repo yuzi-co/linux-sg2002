@@ -4,6 +4,8 @@
  * Copyright (C) 2017 SiFive
  */
 
+#include <linux/of_clk.h>
+#include <linux/clockchips.h>
 #include <linux/clocksource.h>
 #include <linux/of_clk.h>
 #include <linux/delay.h>
@@ -27,7 +29,11 @@ void __init time_init(void)
 	of_clk_init(NULL);
 
 	lpj_fine = riscv_timebase / HZ;
+
+	of_clk_init(NULL);
 	timer_probe();
+
+	tick_setup_hrtimer_broadcast();
 }
 
 void clocksource_arch_init(struct clocksource *cs)

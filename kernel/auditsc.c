@@ -161,7 +161,7 @@ static const struct audit_nfcfgop_tab audit_nfcfgs[] = {
 
 static int audit_match_perm(struct audit_context *ctx, int mask)
 {
-	unsigned n;
+	unsigned int n;
 	if (unlikely(!ctx))
 		return 0;
 	n = ctx->major;
@@ -653,7 +653,7 @@ static int audit_filter_rules(struct task_struct *tsk,
 			result = audit_comparator(audit_loginuid_set(tsk), f->op, f->val);
 			break;
 		case AUDIT_SADDR_FAM:
-			if (ctx->sockaddr)
+			if (ctx && ctx->sockaddr)
 				result = audit_comparator(ctx->sockaddr->ss_family,
 							  f->op, f->val);
 			break;
@@ -837,7 +837,7 @@ static enum audit_state audit_filter_syscall(struct task_struct *tsk,
 static int audit_filter_inode_name(struct task_struct *tsk,
 				   struct audit_names *n,
 				   struct audit_context *ctx) {
-	int h = audit_hash_ino((u32)n->ino);
+	int h = audit_hash_ino(n->ino);
 	struct list_head *list = &audit_inode_hash[h];
 	struct audit_entry *e;
 	enum audit_state state;
@@ -1214,6 +1214,53 @@ static void audit_log_fcaps(struct audit_buffer *ab, struct audit_names *name)
 			 from_kuid(&init_user_ns, name->fcap.rootid));
 }
 
+static void audit_log_time(struct audit_context *context, struct audit_buffer **ab)
+{
+	const struct audit_ntp_data *ntp = &context->time.ntp_data;
+	const struct timespec64 *tk = &context->time.tk_injoffset;
+	static const char * const ntp_name[] = {
+		"offset",
+		"freq",
+		"status",
+		"tai",
+		"tick",
+		"adjust",
+	};
+	int type;
+
+	if (context->type == AUDIT_TIME_ADJNTPVAL) {
+		for (type = 0; type < AUDIT_NTP_NVALS; type++) {
+			if (ntp->vals[type].newval != ntp->vals[type].oldval) {
+				if (!*ab) {
+					*ab = audit_log_start(context,
+							GFP_KERNEL,
+							AUDIT_TIME_ADJNTPVAL);
+					if (!*ab)
+						return;
+				}
+				audit_log_format(*ab, "op=%s old=%lli new=%lli",
+						 ntp_name[type],
+						 ntp->vals[type].oldval,
+						 ntp->vals[type].newval);
+				audit_log_end(*ab);
+				*ab = NULL;
+			}
+		}
+	}
+	if (tk->tv_sec != 0 || tk->tv_nsec != 0) {
+		if (!*ab) {
+			*ab = audit_log_start(context, GFP_KERNEL,
+					      AUDIT_TIME_INJOFFSET);
+			if (!*ab)
+				return;
+		}
+		audit_log_format(*ab, "sec=%lli nsec=%li",
+				 (long long)tk->tv_sec, tk->tv_nsec);
+		audit_log_end(*ab);
+		*ab = NULL;
+	}
+}
+
 static void show_special(struct audit_context *context, int *call_panic)
 {
 	struct audit_buffer *ab;
@@ -1319,6 +1366,11 @@ static void show_special(struct audit_context *context, int *call_panic)
 			audit_log_format(ab, "(null)");
 
 		break;
+	case AUDIT_TIME_ADJNTPVAL:
+	case AUDIT_TIME_INJOFFSET:
+		/* this call deviates from the rest, eating the buffer */
+		audit_log_time(context, &ab);
+		break;
 	}
 	audit_log_end(ab);
 }
@@ -1379,7 +1431,7 @@ static void audit_log_name(struct audit_context *context, struct audit_names *n,
 		audit_log_format(ab, " name=(null)");
 
 	if (n->ino != AUDIT_INO_UNSET)
-		audit_log_format(ab, " inode=%lu dev=%02x:%02x mode=%#ho ouid=%u ogid=%u rdev=%02x:%02x",
+		audit_log_format(ab, " inode=%llu dev=%02x:%02x mode=%#ho ouid=%u ogid=%u rdev=%02x:%02x",
 				 n->ino,
 				 MAJOR(n->dev),
 				 MINOR(n->dev),
@@ -2151,6 +2203,8 @@ void __audit_inode_child(struct inode *parent,
 		}
 	}
 
+	cond_resched();
+
 	/* is there a matching child entry? */
 	list_for_each_entry(n, &context->names_list, list) {
 		/* can only match entries that have a name */
@@ -2528,7 +2582,7 @@ void __audit_log_capset(const struct cred *new, const struct cred *old)
 	struct audit_context *context = audit_context();
 	context->capset.pid = task_tgid_nr(current);
 	context->capset.cap.effective   = new->cap_effective;
-	context->capset.cap.inheritable = new->cap_effective;
+	context->capset.cap.inheritable = new->cap_inheritable;
 	context->capset.cap.permitted   = new->cap_permitted;
 	context->capset.cap.ambient     = new->cap_ambient;
 	context->type = AUDIT_CAPSET;
@@ -2560,31 +2614,26 @@ void __audit_fanotify(unsigned int response)
 
 void __audit_tk_injoffset(struct timespec64 offset)
 {
-	audit_log(audit_context(), GFP_KERNEL, AUDIT_TIME_INJOFFSET,
-		  "sec=%lli nsec=%li",
-		  (long long)offset.tv_sec, offset.tv_nsec);
-}
+	struct audit_context *context = audit_context();
 
-static void audit_log_ntp_val(const struct audit_ntp_data *ad,
-			      const char *op, enum audit_ntp_type type)
-{
-	const struct audit_ntp_val *val = &ad->vals[type];
-
-	if (val->newval == val->oldval)
-		return;
-
-	audit_log(audit_context(), GFP_KERNEL, AUDIT_TIME_ADJNTPVAL,
-		  "op=%s old=%lli new=%lli", op, val->oldval, val->newval);
+	/* only set type if not already set by NTP */
+	if (!context->type)
+		context->type = AUDIT_TIME_INJOFFSET;
+	memcpy(&context->time.tk_injoffset, &offset, sizeof(offset));
 }
 
 void __audit_ntp_log(const struct audit_ntp_data *ad)
 {
-	audit_log_ntp_val(ad, "offset",	AUDIT_NTP_OFFSET);
-	audit_log_ntp_val(ad, "freq",	AUDIT_NTP_FREQ);
-	audit_log_ntp_val(ad, "status",	AUDIT_NTP_STATUS);
-	audit_log_ntp_val(ad, "tai",	AUDIT_NTP_TAI);
-	audit_log_ntp_val(ad, "tick",	AUDIT_NTP_TICK);
-	audit_log_ntp_val(ad, "adjust",	AUDIT_NTP_ADJUST);
+	struct audit_context *context = audit_context();
+	int type;
+
+	for (type = 0; type < AUDIT_NTP_NVALS; type++)
+		if (ad->vals[type].newval != ad->vals[type].oldval) {
+			/* unconditionally set type, overwriting TK */
+			context->type = AUDIT_TIME_ADJNTPVAL;
+			memcpy(&context->time.ntp_data, ad, sizeof(*ad));
+			break;
+		}
 }
 
 void __audit_log_nfcfg(const char *name, u8 af, unsigned int nentries,

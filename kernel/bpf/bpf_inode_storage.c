@@ -109,7 +109,7 @@ static void *bpf_fd_inode_storage_lookup_elem(struct bpf_map *map, void *key)
 	fd = *(int *)key;
 	f = fget_raw(fd);
 	if (!f)
-		return NULL;
+		return ERR_PTR(-EBADF);
 
 	sdata = inode_storage_lookup(f->f_inode, map, true);
 	fput(f);
@@ -125,8 +125,12 @@ static int bpf_fd_inode_storage_update_elem(struct bpf_map *map, void *key,
 
 	fd = *(int *)key;
 	f = fget_raw(fd);
-	if (!f || !inode_storage_ptr(f->f_inode))
+	if (!f)
 		return -EBADF;
+	if (!inode_storage_ptr(f->f_inode)) {
+		fput(f);
+		return -EBADF;
+	}
 
 	sdata = bpf_local_storage_update(f->f_inode,
 					 (struct bpf_local_storage_map *)map,
@@ -176,7 +180,7 @@ BPF_CALL_4(bpf_inode_storage_get, struct bpf_map *, map, struct inode *, inode,
 	 * bpf_local_storage_update expects the owner to have a
 	 * valid storage pointer.
 	 */
-	if (!inode_storage_ptr(inode))
+	if (!inode || !inode_storage_ptr(inode))
 		return (unsigned long)NULL;
 
 	sdata = inode_storage_lookup(inode, map, true);
@@ -200,6 +204,9 @@ BPF_CALL_4(bpf_inode_storage_get, struct bpf_map *, map, struct inode *, inode,
 BPF_CALL_2(bpf_inode_storage_delete,
 	   struct bpf_map *, map, struct inode *, inode)
 {
+	if (!inode)
+		return -EINVAL;
+
 	/* This helper must only called from where the inode is gurranteed
 	 * to have a refcount and cannot be freed.
 	 */
@@ -215,6 +222,16 @@ static int notsupp_get_next_key(struct bpf_map *map, void *key,
 static struct bpf_map *inode_storage_map_alloc(union bpf_attr *attr)
 {
 	struct bpf_local_storage_map *smap;
+
+	/*
+	 * Do not allow allocation of BPF_MAP_TYPE_INODE_STORAGE if the BPF LSM
+	 * was not initialized by the LSM framework at boot. Without proper
+	 * initialization, the BPF inode security blob offset remains unprepared,
+	 * causing bpf_inode() to calculate an invalid memory offset and corrupt
+	 * inode->i_security.
+	 */
+	if (!bpf_lsm_initialized)
+		return ERR_PTR(-EOPNOTSUPP);
 
 	smap = bpf_local_storage_map_alloc(attr);
 	if (IS_ERR(smap))

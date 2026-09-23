@@ -480,7 +480,7 @@ static inline int gred_change_vq(struct Qdisc *sch, int dp,
 	struct gred_sched *table = qdisc_priv(sch);
 	struct gred_sched_data *q = table->tab[dp];
 
-	if (!red_check_params(ctl->qth_min, ctl->qth_max, ctl->Wlog)) {
+	if (!red_check_params(ctl->qth_min, ctl->qth_max, ctl->Wlog, ctl->Scell_log, stab)) {
 		NL_SET_ERR_MSG_MOD(extack, "invalid RED parameters");
 		return -EINVAL;
 	}
@@ -817,7 +817,6 @@ static int gred_dump(struct Qdisc *sch, struct sk_buff *skb)
 		opt.Wlog	= q->parms.Wlog;
 		opt.Plog	= q->parms.Plog;
 		opt.Scell_log	= q->parms.Scell_log;
-		opt.other	= q->stats.other;
 		opt.early	= q->stats.prob_drop;
 		opt.forced	= q->stats.forced_drop;
 		opt.pdrop	= q->stats.pdrop;
@@ -882,8 +881,6 @@ append_opt:
 				q->stats.forced_mark))
 			goto nla_put_failure;
 		if (nla_put_u32(skb, TCA_GRED_VQ_STAT_PDROP, q->stats.pdrop))
-			goto nla_put_failure;
-		if (nla_put_u32(skb, TCA_GRED_VQ_STAT_OTHER, q->stats.other))
 			goto nla_put_failure;
 
 		nla_nest_end(skb, vq);

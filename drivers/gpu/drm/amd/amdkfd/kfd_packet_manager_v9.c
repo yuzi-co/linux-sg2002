@@ -156,7 +156,7 @@ static int pm_map_queues_v9(struct packet_manager *pm, uint32_t *buffer,
 
 	packet->bitfields2.engine_sel =
 		engine_sel__mes_map_queues__compute_vi;
-	packet->bitfields2.gws_control_queue = q->gws ? 1 : 0;
+	packet->bitfields2.gws_control_queue = q->properties.is_gws ? 1 : 0;
 	packet->bitfields2.extended_engine_sel =
 		extended_engine_sel__mes_map_queues__legacy_engine_sel;
 	packet->bitfields2.queue_type =
@@ -283,7 +283,7 @@ static int pm_unmap_queues_v9(struct packet_manager *pm, uint32_t *buffer,
 }
 
 static int pm_query_status_v9(struct packet_manager *pm, uint32_t *buffer,
-			uint64_t fence_address,	uint32_t fence_value)
+			uint64_t fence_address,	uint64_t fence_value)
 {
 	struct pm4_mes_query_status *packet;
 

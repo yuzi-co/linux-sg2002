@@ -761,12 +761,6 @@ static int tb_init_port(struct tb_port *port)
 
 	tb_dump_port(port->sw->tb, &port->config);
 
-	/* Control port does not need HopID allocation */
-	if (port->port) {
-		ida_init(&port->in_hopids);
-		ida_init(&port->out_hopids);
-	}
-
 	INIT_LIST_HEAD(&port->list);
 	return 0;
 
@@ -1185,7 +1179,7 @@ int tb_dp_port_set_hops(struct tb_port *port, unsigned int video,
 		return ret;
 
 	data[0] &= ~ADP_DP_CS_0_VIDEO_HOPID_MASK;
-	data[1] &= ~ADP_DP_CS_1_AUX_RX_HOPID_MASK;
+	data[1] &= ~ADP_DP_CS_1_AUX_TX_HOPID_MASK;
 	data[1] &= ~ADP_DP_CS_1_AUX_RX_HOPID_MASK;
 
 	data[0] |= (video << ADP_DP_CS_0_VIDEO_HOPID_SHIFT) &
@@ -1764,10 +1758,8 @@ static void tb_switch_release(struct device *dev)
 	dma_port_free(sw->dma_port);
 
 	tb_switch_for_each_port(sw, port) {
-		if (!port->disabled) {
-			ida_destroy(&port->in_hopids);
-			ida_destroy(&port->out_hopids);
-		}
+		ida_destroy(&port->in_hopids);
+		ida_destroy(&port->out_hopids);
 	}
 
 	kfree(sw->uuid);
@@ -1947,6 +1939,12 @@ struct tb_switch *tb_switch_alloc(struct tb *tb, struct device *parent,
 		/* minimum setup for tb_find_cap and tb_drom_read to work */
 		sw->ports[i].sw = sw;
 		sw->ports[i].port = i;
+
+		/* Control port does not need HopID allocation */
+		if (i) {
+			ida_init(&sw->ports[i].in_hopids);
+			ida_init(&sw->ports[i].out_hopids);
+		}
 	}
 
 	ret = tb_switch_find_vse_cap(sw, TB_VSE_CAP_PLUG_EVENTS);
@@ -2048,6 +2046,7 @@ int tb_switch_configure(struct tb_switch *sw)
 		 * additional capabilities.
 		 */
 		sw->config.cmuv = USB4_VERSION_1_0;
+		sw->config.plug_events_delay = 0xa;
 
 		/* Enumerate the switch */
 		ret = tb_sw_write(sw, (u32 *)&sw->config + 1, TB_CFG_SWITCH,
@@ -2206,7 +2205,7 @@ static void tb_switch_default_link_ports(struct tb_switch *sw)
 {
 	int i;
 
-	for (i = 1; i <= sw->config.max_port_number; i += 2) {
+	for (i = 1; i <= sw->config.max_port_number; i++) {
 		struct tb_port *port = &sw->ports[i];
 		struct tb_port *subordinate;
 
@@ -2304,6 +2303,13 @@ int tb_switch_lane_bonding_enable(struct tb_switch *sw)
 	    !tb_port_is_width_supported(down, 2))
 		return 0;
 
+	/*
+	 * Both lanes need to be in CL0. Here we assume lane 0 already be in
+	 * CL0 and check just for lane 1.
+	 */
+	if (tb_wait_for_port(down->dual_link_port, false) <= 0)
+		return -ENOTCONN;
+
 	ret = tb_port_lane_bonding_enable(up);
 	if (ret) {
 		tb_port_warn(up, "failed to enable lane bonding\n");
@@ -2396,9 +2402,22 @@ void tb_switch_unconfigure_link(struct tb_switch *sw)
 {
 	struct tb_port *up, *down;
 
-	if (sw->is_unplugged)
-		return;
 	if (!tb_route(sw) || tb_switch_is_icm(sw))
+		return;
+
+	/*
+	 * Unconfigure downstream port so that wake-on-connect can be
+	 * configured after router unplug. No need to unconfigure upstream port
+	 * since its router is unplugged.
+	 */
+	up = tb_upstream_port(sw);
+	down = up->remote;
+	if (tb_switch_is_usb4(down->sw))
+		usb4_port_unconfigure(down);
+	else
+		tb_lc_unconfigure_port(down);
+
+	if (sw->is_unplugged)
 		return;
 
 	up = tb_upstream_port(sw);
@@ -2406,12 +2425,26 @@ void tb_switch_unconfigure_link(struct tb_switch *sw)
 		usb4_port_unconfigure(up);
 	else
 		tb_lc_unconfigure_port(up);
+}
 
-	down = up->remote;
-	if (tb_switch_is_usb4(down->sw))
-		usb4_port_unconfigure(down);
-	else
-		tb_lc_unconfigure_port(down);
+static int tb_switch_port_hotplug_enable(struct tb_switch *sw)
+{
+	struct tb_port *port;
+
+	if (tb_switch_is_icm(sw))
+		return 0;
+
+	tb_switch_for_each_port(sw, port) {
+		int res;
+
+		if (!port->cap_usb4)
+			continue;
+
+		res = usb4_port_hotplug_enable(port);
+		if (res)
+			return res;
+	}
+	return 0;
 }
 
 /**
@@ -2481,6 +2514,10 @@ int tb_switch_add(struct tb_switch *sw)
 			return ret;
 	}
 
+	ret = tb_switch_port_hotplug_enable(sw);
+	if (ret)
+		return ret;
+
 	ret = device_add(&sw->dev);
 	if (ret) {
 		dev_err(&sw->dev, "failed to add device: %d\n", ret);
@@ -2547,6 +2584,7 @@ void tb_switch_remove(struct tb_switch *sw)
 			tb_switch_remove(port->remote->sw);
 			port->remote = NULL;
 		} else if (port->xdomain) {
+			port->xdomain->is_unplugged = true;
 			tb_xdomain_remove(port->xdomain);
 			port->xdomain = NULL;
 		}
@@ -2601,7 +2639,26 @@ static int tb_switch_set_wake(struct tb_switch *sw, unsigned int flags)
 	return tb_lc_set_wake(sw, flags);
 }
 
-int tb_switch_resume(struct tb_switch *sw)
+static void tb_switch_check_wakes(struct tb_switch *sw)
+{
+	if (device_may_wakeup(&sw->dev)) {
+		if (tb_switch_is_usb4(sw))
+			usb4_switch_check_wakes(sw);
+	}
+}
+
+/**
+ * tb_switch_resume() - Resume a switch after sleep
+ * @sw: Switch to resume
+ * @runtime: Is this resume from runtime suspend or system sleep
+ *
+ * Resumes and re-enumerates router (and all its children), if still plugged
+ * after suspend. Don't enumerate device router whose UID was changed during
+ * suspend. If this is resume from system sleep, notifies PM core about the
+ * wakes occurred during suspend. Disables all wakes, except USB4 wake of
+ * upstream port for USB4 routers that shall be always enabled.
+ */
+int tb_switch_resume(struct tb_switch *sw, bool runtime)
 {
 	struct tb_port *port;
 	int err;
@@ -2646,6 +2703,9 @@ int tb_switch_resume(struct tb_switch *sw)
 	if (err)
 		return err;
 
+	if (!runtime)
+		tb_switch_check_wakes(sw);
+
 	/* Disable wakes */
 	tb_switch_set_wake(sw, 0);
 
@@ -2672,10 +2732,25 @@ int tb_switch_resume(struct tb_switch *sw)
 			 */
 			if (tb_port_unlock(port))
 				tb_port_warn(port, "failed to unlock port\n");
-			if (port->remote && tb_switch_resume(port->remote->sw)) {
+			if (port->remote &&
+			    tb_switch_resume(port->remote->sw, runtime)) {
 				tb_port_warn(port,
 					     "lost during suspend, disconnecting\n");
 				tb_sw_set_unplugged(port->remote->sw);
+			} else if (port->xdomain) {
+				/*
+				 * If the user replaced the XDomain with
+				 * another router, this will succeed in
+				 * which case we must remove the XDomain
+				 * before adding the new router.
+				 */
+				err = tb_cfg_get_upstream_port(sw->tb->ctl,
+							       port->xdomain->route);
+				if (err > 0) {
+					tb_port_warn(port,
+						     "XDomain was disconnected\n");
+					port->xdomain->is_unplugged = true;
+				}
 			}
 		}
 	}

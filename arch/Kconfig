@@ -9,6 +9,14 @@
 #
 source "arch/$(SRCARCH)/Kconfig"
 
+config ARCH_CONFIGURES_CPU_MITIGATIONS
+	bool
+
+if !ARCH_CONFIGURES_CPU_MITIGATIONS
+config CPU_MITIGATIONS
+	def_bool y
+endif
+
 menu "General architecture-dependent options"
 
 config CRASH_CORE
@@ -288,6 +296,9 @@ config ARCH_HAS_DMA_SET_UNCACHED
 # to undo an in-place page table remap for uncached access.
 #
 config ARCH_HAS_DMA_CLEAR_UNCACHED
+	bool
+
+config ARCH_HAS_CPU_FINALIZE_INIT
 	bool
 
 # Select if arch init_task must go in the __init_task_data section
@@ -1026,6 +1037,9 @@ config RELR
 config ARCH_HAS_MEM_ENCRYPT
 	bool
 
+config ARCH_HAS_CC_PLATFORM
+	bool
+
 config HAVE_SPARSE_SYSCALL_NR
        bool
        help
@@ -1052,6 +1066,12 @@ config ARCH_WANT_LD_ORPHAN_WARN
 	  important because we never want expected sections to be placed heuristically
 	  by the linker, since the locations of such sections can change between linker
 	  versions.
+
+config ARCH_SPLIT_ARG64
+	bool
+	help
+	   If a 32-bit architecture requires 64-bit arguments to be split into
+	   pairs of 32-bit arguments, select this option.
 
 source "kernel/gcov/Kconfig"
 

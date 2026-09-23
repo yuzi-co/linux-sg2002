@@ -294,6 +294,7 @@ static int cros_typec_init_ports(struct cros_typec_data *typec)
 	return 0;
 
 unregister_ports:
+	fwnode_handle_put(fwnode);
 	cros_unregister_ports(typec);
 	return ret;
 }
@@ -473,6 +474,11 @@ static int cros_typec_enable_dp(struct cros_typec_data *typec,
 		dev_err(typec->dev,
 			"PD_CTRL version too old: %d\n", typec->pd_ctrl_ver);
 		return -ENOTSUPP;
+	}
+
+	if (!pd_ctrl->dp_mode) {
+		dev_err(typec->dev, "No valid DP mode provided.\n");
+		return -EINVAL;
 	}
 
 	/* Status VDO. */
@@ -707,7 +713,13 @@ static int cros_typec_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	typec->dev = dev;
+
 	typec->ec = dev_get_drvdata(pdev->dev.parent);
+	if (!typec->ec) {
+		dev_warn(dev, "couldn't find parent EC device\n");
+		return -EPROBE_DEFER;
+	}
+
 	platform_set_drvdata(pdev, typec);
 
 	ret = cros_typec_get_cmd_version(typec);

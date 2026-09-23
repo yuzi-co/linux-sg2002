@@ -17,6 +17,9 @@
 #include <linux/sort.h>
 #include <linux/slab.h>
 
+#define CREATE_TRACE_POINTS
+#include "cros_ec_sensorhub_trace.h"
+
 /* Precision of fixed point for the m values from the filter */
 #define M_PRECISION BIT(23)
 
@@ -291,6 +294,7 @@ cros_ec_sensor_ring_ts_filter_update(struct cros_ec_sensors_ts_filter_state
 		state->median_m = 0;
 		state->median_error = 0;
 	}
+	trace_cros_ec_sensorhub_filter(state, dx, dy);
 }
 
 /**
@@ -427,6 +431,26 @@ cros_ec_sensor_ring_process_event(struct cros_ec_sensorhub *sensorhub,
 			if (new_timestamp - *current_timestamp > 0)
 				*current_timestamp = new_timestamp;
 		}
+		trace_cros_ec_sensorhub_timestamp(in->timestamp,
+						  fifo_info->timestamp,
+						  fifo_timestamp,
+						  *current_timestamp,
+						  now);
+
+		/*
+		 * A standalone timestamp event typically has a sensor_num of
+		 * 0xff.  Return early here to prevent it from hitting the
+		 * bounds check below and spamming the logs.
+		 */
+		return false;
+	}
+
+	/* Skip event if sensor_num from EC is out of bounds. */
+	if (in->sensor_num >= sensorhub->sensor_num) {
+		dev_warn_ratelimited(sensorhub->dev,
+				     "Invalid sensor number %u from EC\n",
+				     in->sensor_num);
+		return false;
 	}
 
 	if (in->flags & MOTIONSENSE_SENSOR_FLAG_ODR) {
@@ -454,12 +478,14 @@ cros_ec_sensor_ring_process_event(struct cros_ec_sensorhub *sensorhub,
 		return true;
 	}
 
-	if (in->flags & MOTIONSENSE_SENSOR_FLAG_TIMESTAMP)
-		/* If we just have a timestamp, skip this entry. */
-		return false;
-
 	/* Regular sample */
 	out->sensor_id = in->sensor_num;
+	trace_cros_ec_sensorhub_data(in->sensor_num,
+				     fifo_info->timestamp,
+				     fifo_timestamp,
+				     *current_timestamp,
+				     now);
+
 	if (*current_timestamp - now > 0) {
 		/*
 		 * This fix is needed to overcome the timestamp filter putting
@@ -771,8 +797,15 @@ static void cros_ec_sensorhub_ring_handler(struct cros_ec_sensorhub *sensorhub)
 		sensorhub->msg->outsize = 1;
 		sensorhub->msg->insize = fifo_info_length;
 
-		if (cros_ec_cmd_xfer_status(ec->ec_dev, sensorhub->msg) < 0)
+		ret = cros_ec_cmd_xfer_status(ec->ec_dev, sensorhub->msg);
+		if (ret < 0)
 			goto error;
+		if (ret != fifo_info_length) {
+			dev_warn_ratelimited(sensorhub->dev,
+					     "Mismatch read length: size %d - expected %d\n",
+					     ret, fifo_info_length);
+			goto error;
+		}
 
 		memcpy(fifo_info, &sensorhub->resp->fifo_info,
 		       fifo_info_length);

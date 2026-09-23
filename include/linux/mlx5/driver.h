@@ -56,6 +56,8 @@
 #include <linux/ptp_clock_kernel.h>
 #include <net/devlink.h>
 
+#define MLX5_ADEV_NAME "mlx5_core"
+
 enum {
 	MLX5_BOARD_ID_LEN = 64,
 };
@@ -388,6 +390,7 @@ struct mlx5_core_rsc_common {
 	enum mlx5_res_type	res;
 	refcount_t		refcount;
 	struct completion	free;
+	bool			invalid;
 };
 
 struct mlx5_uars_page {
@@ -644,18 +647,21 @@ struct mlx5_pps {
 	u8                         enabled;
 };
 
+struct mlx5_timer {
+	struct cyclecounter        cycles;
+	struct timecounter         tc;
+	u32                        nominal_c_mult;
+	unsigned long              overflow_period;
+};
+
 struct mlx5_clock {
 	struct mlx5_nb             pps_nb;
 	seqlock_t                  lock;
-	struct cyclecounter        cycles;
-	struct timecounter         tc;
 	struct hwtstamp_config     hwtstamp_config;
-	u32                        nominal_c_mult;
-	unsigned long              overflow_period;
-	struct delayed_work        overflow_work;
 	struct ptp_clock          *ptp;
 	struct ptp_clock_info      ptp_info;
 	struct mlx5_pps            pps_info;
+	struct mlx5_timer          timer;
 };
 
 struct mlx5_dm;
@@ -899,7 +905,7 @@ void mlx5_cmd_allowed_opcode(struct mlx5_core_dev *dev, u16 opcode);
 struct mlx5_async_ctx {
 	struct mlx5_core_dev *dev;
 	atomic_t num_inflight;
-	struct wait_queue_head wait;
+	struct completion inflight_done;
 };
 
 struct mlx5_async_work;
@@ -981,8 +987,7 @@ void mlx5_unregister_debugfs(void);
 void mlx5_fill_page_array(struct mlx5_frag_buf *buf, __be64 *pas);
 void mlx5_fill_page_frag_array_perm(struct mlx5_frag_buf *buf, __be64 *pas, u8 perm);
 void mlx5_fill_page_frag_array(struct mlx5_frag_buf *frag_buf, __be64 *pas);
-int mlx5_vector2eqn(struct mlx5_core_dev *dev, int vector, int *eqn,
-		    unsigned int *irqn);
+int mlx5_vector2eqn(struct mlx5_core_dev *dev, int vector, int *eqn);
 int mlx5_core_attach_mcg(struct mlx5_core_dev *dev, union ib_gid *mgid, u32 qpn);
 int mlx5_core_detach_mcg(struct mlx5_core_dev *dev, union ib_gid *mgid, u32 qpn);
 
@@ -1137,7 +1142,13 @@ static inline bool mlx5_core_is_vf(const struct mlx5_core_dev *dev)
 	return dev->coredev_type == MLX5_COREDEV_VF;
 }
 
-static inline bool mlx5_core_is_ecpf(struct mlx5_core_dev *dev)
+static inline bool mlx5_core_same_coredev_type(const struct mlx5_core_dev *dev1,
+					       const struct mlx5_core_dev *dev2)
+{
+	return dev1->coredev_type == dev2->coredev_type;
+}
+
+static inline bool mlx5_core_is_ecpf(const struct mlx5_core_dev *dev)
 {
 	return dev->caps.embedded_cpu;
 }
@@ -1211,24 +1222,6 @@ static inline bool mlx5_is_roce_enabled(struct mlx5_core_dev *dev)
 					   DEVLINK_PARAM_GENERIC_ID_ENABLE_ROCE,
 					   &val);
 	return val.vbool;
-}
-
-/**
- * mlx5_core_net - Provide net namespace of the mlx5_core_dev
- * @dev: mlx5 core device
- *
- * mlx5_core_net() returns the net namespace of mlx5 core device.
- * This can be called only in below described limited context.
- * (a) When a devlink instance for mlx5_core is registered and
- *     when devlink reload operation is disabled.
- *     or
- * (b) during devlink reload reload_down() and reload_up callbacks
- *     where it is ensured that devlink instance's net namespace is
- *     stable.
- */
-static inline struct net *mlx5_core_net(struct mlx5_core_dev *dev)
-{
-	return devlink_net(priv_to_devlink(dev));
 }
 
 #endif /* MLX5_DRIVER_H */

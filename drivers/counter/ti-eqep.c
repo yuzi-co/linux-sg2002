@@ -6,6 +6,7 @@
  */
 
 #include <linux/bitops.h>
+#include <linux/clk.h>
 #include <linux/counter.h>
 #include <linux/kernel.h>
 #include <linux/mod_devicetable.h>
@@ -235,36 +236,6 @@ static ssize_t ti_eqep_position_ceiling_write(struct counter_device *counter,
 	return len;
 }
 
-static ssize_t ti_eqep_position_floor_read(struct counter_device *counter,
-					   struct counter_count *count,
-					   void *ext_priv, char *buf)
-{
-	struct ti_eqep_cnt *priv = counter->priv;
-	u32 qposinit;
-
-	regmap_read(priv->regmap32, QPOSINIT, &qposinit);
-
-	return sprintf(buf, "%u\n", qposinit);
-}
-
-static ssize_t ti_eqep_position_floor_write(struct counter_device *counter,
-					    struct counter_count *count,
-					    void *ext_priv, const char *buf,
-					    size_t len)
-{
-	struct ti_eqep_cnt *priv = counter->priv;
-	int err;
-	u32 res;
-
-	err = kstrtouint(buf, 0, &res);
-	if (err < 0)
-		return err;
-
-	regmap_write(priv->regmap32, QPOSINIT, res);
-
-	return len;
-}
-
 static ssize_t ti_eqep_position_enable_read(struct counter_device *counter,
 					    struct counter_count *count,
 					    void *ext_priv, char *buf)
@@ -300,11 +271,6 @@ static struct counter_count_ext ti_eqep_position_ext[] = {
 		.name	= "ceiling",
 		.read	= ti_eqep_position_ceiling_read,
 		.write	= ti_eqep_position_ceiling_write,
-	},
-	{
-		.name	= "floor",
-		.read	= ti_eqep_position_floor_read,
-		.write	= ti_eqep_position_floor_write,
 	},
 	{
 		.name	= "enable",
@@ -384,6 +350,7 @@ static int ti_eqep_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct ti_eqep_cnt *priv;
 	void __iomem *base;
+	struct clk *clk;
 	int err;
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
@@ -422,6 +389,10 @@ static int ti_eqep_probe(struct platform_device *pdev)
 	 */
 	pm_runtime_enable(dev);
 	pm_runtime_get_sync(dev);
+
+	clk = devm_clk_get_enabled(dev, NULL);
+	if (IS_ERR(clk))
+		return dev_err_probe(dev, PTR_ERR(clk), "failed to enable clock\n");
 
 	err = counter_register(&priv->counter);
 	if (err < 0) {

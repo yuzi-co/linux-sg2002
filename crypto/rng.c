@@ -34,22 +34,18 @@ int crypto_rng_reset(struct crypto_rng *tfm, const u8 *seed, unsigned int slen)
 	u8 *buf = NULL;
 	int err;
 
-	crypto_stats_get(alg);
 	if (!seed && slen) {
 		buf = kmalloc(slen, GFP_KERNEL);
-		if (!buf) {
-			crypto_alg_put(alg);
+		if (!buf)
 			return -ENOMEM;
-		}
 
 		err = get_random_bytes_wait(buf, slen);
-		if (err) {
-			crypto_alg_put(alg);
+		if (err)
 			goto out;
-		}
 		seed = buf;
 	}
 
+	crypto_stats_get(alg);
 	err = crypto_rng_alg(tfm)->seed(tfm, seed, slen);
 	crypto_stats_rng_seed(alg, err);
 out:
@@ -178,6 +174,11 @@ out:
 EXPORT_SYMBOL_GPL(crypto_del_default_rng);
 #endif
 
+static void rng_default_set_ent(struct crypto_rng *tfm, const u8 *data,
+				unsigned int len)
+{
+}
+
 int crypto_register_rng(struct rng_alg *alg)
 {
 	struct crypto_alg *base = &alg->base;
@@ -188,6 +189,9 @@ int crypto_register_rng(struct rng_alg *alg)
 	base->cra_type = &crypto_rng_type;
 	base->cra_flags &= ~CRYPTO_ALG_TYPE_MASK;
 	base->cra_flags |= CRYPTO_ALG_TYPE_RNG;
+
+	if (!alg->set_ent)
+		alg->set_ent = rng_default_set_ent;
 
 	return crypto_register_alg(base);
 }
@@ -227,6 +231,17 @@ void crypto_unregister_rngs(struct rng_alg *algs, int count)
 		crypto_unregister_rng(algs + i);
 }
 EXPORT_SYMBOL_GPL(crypto_unregister_rngs);
+
+static void __exit rng_exit(void)
+{
+	int err;
+
+	err = crypto_del_default_rng();
+	if (err)
+		pr_err("Failed delete default RNG: %d\n", err);
+}
+
+module_exit(rng_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Random Number Generator");

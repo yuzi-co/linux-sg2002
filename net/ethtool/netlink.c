@@ -356,8 +356,7 @@ static int ethnl_default_doit(struct sk_buff *skb, struct genl_info *info)
 		ops->cleanup_data(reply_data);
 
 	genlmsg_end(rskb, reply_payload);
-	if (req_info->dev)
-		dev_put(req_info->dev);
+	dev_put(req_info->dev);
 	kfree(reply_data);
 	kfree(req_info);
 	return genlmsg_reply(rskb, info);
@@ -369,8 +368,7 @@ err_cleanup:
 	if (ops->cleanup_data)
 		ops->cleanup_data(reply_data);
 err_dev:
-	if (req_info->dev)
-		dev_put(req_info->dev);
+	dev_put(req_info->dev);
 	kfree(reply_data);
 	kfree(req_info);
 	return ret;
@@ -384,7 +382,8 @@ static int ethnl_default_dump_one(struct sk_buff *skb, struct net_device *dev,
 	int ret;
 
 	ehdr = genlmsg_put(skb, NETLINK_CB(cb->skb).portid, cb->nlh->nlmsg_seq,
-			   &ethtool_genl_family, 0, ctx->ops->reply_cmd);
+			   &ethtool_genl_family, NLM_F_MULTI,
+			   ctx->ops->reply_cmd);
 	if (!ehdr)
 		return -EMSGSIZE;
 

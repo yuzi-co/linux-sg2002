@@ -58,12 +58,17 @@ static rx_handler_result_t hsr_handle_frame(struct sk_buff **pskb)
 		goto finish_pass;
 
 	skb_push(skb, ETH_HLEN);
+	skb_reset_mac_header(skb);
+	if ((!hsr->prot_version && protocol == htons(ETH_P_PRP)) ||
+	    protocol == htons(ETH_P_HSR)) {
+		if (!pskb_may_pull(skb, ETH_HLEN + HSR_HLEN)) {
+			kfree_skb(skb);
+			goto finish_consume;
+		}
 
-	if (skb_mac_header(skb) != skb->data) {
-		WARN_ONCE(1, "%s:%d: Malformed frame at source port %s)\n",
-			  __func__, __LINE__, port->dev->name);
-		goto finish_consume;
+		skb_set_network_header(skb, ETH_HLEN + HSR_HLEN);
 	}
+	skb_reset_mac_len(skb);
 
 	hsr_forward_skb(skb, port);
 

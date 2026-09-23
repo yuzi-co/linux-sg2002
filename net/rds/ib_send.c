@@ -170,6 +170,8 @@ static struct rds_message *rds_ib_send_unmap_op(struct rds_ib_connection *ic,
 		break;
 	case IB_WR_ATOMIC_FETCH_AND_ADD:
 	case IB_WR_ATOMIC_CMP_AND_SWP:
+	case IB_WR_MASKED_ATOMIC_FETCH_AND_ADD:
+	case IB_WR_MASKED_ATOMIC_CMP_AND_SWP:
 		if (send->s_op) {
 			rm = container_of(send->s_op, struct rds_message, atomic);
 			rds_ib_send_unmap_atomic(ic, send->s_op, wc_status);
@@ -638,6 +640,10 @@ int rds_ib_xmit(struct rds_connection *conn, struct rds_message *rm,
 		send->s_sge[0].length = sizeof(struct rds_header);
 		send->s_sge[0].lkey = ic->i_pd->local_dma_lkey;
 
+		ib_dma_sync_single_for_cpu(ic->rds_ibdev->dev,
+					   ic->i_send_hdrs_dma[pos],
+					   sizeof(struct rds_header),
+					   DMA_TO_DEVICE);
 		memcpy(ic->i_send_hdrs[pos], &rm->m_inc.i_hdr,
 		       sizeof(struct rds_header));
 
@@ -688,6 +694,10 @@ int rds_ib_xmit(struct rds_connection *conn, struct rds_message *rm,
 			adv_credits = 0;
 			rds_ib_stats_inc(s_ib_tx_credit_updates);
 		}
+		ib_dma_sync_single_for_device(ic->rds_ibdev->dev,
+					      ic->i_send_hdrs_dma[pos],
+					      sizeof(struct rds_header),
+					      DMA_TO_DEVICE);
 
 		if (prev)
 			prev->s_wr.next = &send->s_wr;
