@@ -573,8 +573,9 @@ static void dw_axi_dma_set_hw_channel(struct axi_dma_chan *chan, bool set)
 	struct axi_dma_chip *chip = chan->chip;
 	unsigned long reg_value, val;
 
+	/* Without APB registers an external mux routes the handshakes. */
 	if (!chip->apb_regs) {
-		dev_err(chip->dev, "apb_regs not initialized\n");
+		dev_dbg(chip->dev, "apb_regs not initialized\n");
 		return;
 	}
 
