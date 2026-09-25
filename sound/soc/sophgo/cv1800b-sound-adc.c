@@ -47,11 +47,15 @@
 #define REG_DA_END2US_RXPGA_OW_EN      BIT(17)
 #define REG_DA_EN_RXADC_OW_EN          BIT(18)
 #define REG_DA_EN_AUDBIAS_OW_EN        BIT(19)
-#define ANA6_FORCE_ALL_ON \
-	(REG_DA_EN_RXPGA_OW_VAL | REG_DA_END2US_RXPGA_OW_VAL | \
-	 REG_DA_EN_RXADC_OW_VAL | REG_DA_EN_AUDBIAS_OW_VAL  | \
-	 REG_DA_EN_RXPGA_OW_EN  | REG_DA_END2US_RXPGA_OW_EN | \
-	 REG_DA_EN_RXADC_OW_EN  | REG_DA_EN_AUDBIAS_OW_EN)
+/*
+ * END2US stays under hardware control: forcing it turns every PGA gain
+ * of 16 dB and above into full-band noise.
+ */
+#define ANA6_FORCE_ON \
+	(REG_DA_EN_RXPGA_OW_VAL | REG_DA_EN_RXADC_OW_VAL | \
+	 REG_DA_EN_AUDBIAS_OW_VAL | \
+	 REG_DA_EN_RXPGA_OW_EN  | REG_DA_EN_RXADC_OW_EN | \
+	 REG_DA_EN_AUDBIAS_OW_EN)
 
 /*
  * Cross-block ECO: TXDAC.ANA0[0] (ADDI_TXDAC) gates the analog input
@@ -267,11 +271,12 @@ static const struct snd_soc_dai_ops cv1800b_adc_dai_ops = {
 	.trigger = cv1800b_adc_dai_trigger,
 };
 
+/* The RXADC sends one sample per frame; a second slot only ever reads zero. */
 static struct snd_soc_dai_driver cv1800b_adc_dai = {
 	.name = "adc-hifi",
 	.capture = { .stream_name = "ADC Capture",
 		     .channels_min = 1,
-		     .channels_max = 2,
+		     .channels_max = 1,
 		     .rates = SNDRV_PCM_RATE_48000,
 		     .formats = SNDRV_PCM_FMTBIT_S16_LE },
 	.ops = &cv1800b_adc_dai_ops,
@@ -360,13 +365,13 @@ static void cv1800b_adc_init_analog(struct cv1800b_priv *priv)
 	}
 
 	/*
-	 * Force PGA, RXADC core, AUDBIAS, and END2US rails on via the
+	 * Force PGA, RXADC core and AUDBIAS rails on via the
 	 * ANA6 override register. ANA4 status bits read as 0 on this
 	 * board (the auto-enable path the SoC expects isn't kicking in),
 	 * so the OW_EN/OW_VAL escape hatch is the only way to bring the
 	 * analog stage up.
 	 */
-	writel(ANA6_FORCE_ALL_ON, priv->regs + CV1800B_RXADC_ANA6);
+	writel(ANA6_FORCE_ON, priv->regs + CV1800B_RXADC_ANA6);
 
 	/* Clear MUTEL_RXPGA / MUTER_RXPGA in case probe defaults left
 	 * the input stage muted. */
