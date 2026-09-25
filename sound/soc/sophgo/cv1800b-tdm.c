@@ -82,6 +82,7 @@
 
 /* CV1800B_FRAME_SETTING (0x004) */
 #define FRAME_LENGTH_MASK                  GENMASK(8, 0)
+#define FS_CHANNEL_SYNC_MASK               GENMASK(14, 14)
 #define FS_ACTIVE_LENGTH_MASK              GENMASK(23, 16)
 
 /* CV1800B_I2S_INT_EN (0x020) */
@@ -512,6 +513,14 @@ static int cv1800b_i2s_dai_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	val = readl(i2s->base + CV1800B_BLK_MODE_SETTING);
 	val = u32_replace_bits(val, master, BLK_MASTER_MODE_MASK);
 	writel(val, i2s->base + CV1800B_BLK_MODE_SETTING);
+
+	/*
+	 * The reset default starts a frame on both LRCK edges, so a
+	 * one-slot capture takes every other sample from the empty half.
+	 */
+	val = readl(i2s->base + CV1800B_FRAME_SETTING);
+	val = u32_replace_bits(val, 0, FS_CHANNEL_SYNC_MASK);
+	writel(val, i2s->base + CV1800B_FRAME_SETTING);
 	return 0;
 }
 
