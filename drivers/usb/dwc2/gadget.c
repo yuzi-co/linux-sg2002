@@ -4156,6 +4156,15 @@ static int dwc2_hsotg_ep_enable(struct usb_ep *ep,
 	}
 
 	/*
+	 * NAK OUT tokens until a request is queued; dwc2_hsotg_start_req()
+	 * clears the NAK. Otherwise the core accepts a packet into the RX
+	 * FIFO, which all OUT endpoints share, and in DMA mode nothing drains
+	 * it: every OUT endpoint, EP0 SETUPs included, stalls behind it.
+	 */
+	if (!dir_in && index)
+		epctrl |= DXEPCTL_SNAK;
+
+	/*
 	 * if the hardware has dedicated fifos, we must give each IN EP
 	 * a unique tx-fifo even if it is non-periodic.
 	 */
