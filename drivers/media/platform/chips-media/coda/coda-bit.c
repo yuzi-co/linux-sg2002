@@ -779,6 +779,14 @@ static int coda_enc_param_change(struct coda_ctx *ctx)
 		}
 		ctx->params.h264_intra_qp_changed = false;
 	}
+	/*
+	 * Send the bitrate with a Coda980 frame rate change, so the rate
+	 * control never sees whatever the bitrate register last held.
+	 */
+	if (dev->devtype->has_coda980_h264_abi &&
+	    ctx->codec->dst_fourcc == V4L2_PIX_FMT_H264 &&
+	    ctx->params.framerate_changed && ctx->params.bitrate)
+		ctx->params.bitrate_changed = true;
 	if (ctx->params.bitrate_changed) {
 		coda_dbg(1, ctx, "parameter change: bitrate %u kbit/s\n",
 			 ctx->params.bitrate);
@@ -1140,6 +1148,8 @@ static int coda_start_encoding(struct coda_ctx *ctx)
 	u32 bitstream_buf, bitstream_size;
 	struct vb2_v4l2_buffer *buf;
 	int gamma, ret, value;
+	bool coda980_h264;
+	u32 rc_para2 = 0;
 	u32 dst_fourcc;
 	int num_fb;
 	u32 stride;
@@ -1147,6 +1157,8 @@ static int coda_start_encoding(struct coda_ctx *ctx)
 	q_data_src = get_q_data(ctx, V4L2_BUF_TYPE_VIDEO_OUTPUT);
 	q_data_dst = get_q_data(ctx, V4L2_BUF_TYPE_VIDEO_CAPTURE);
 	dst_fourcc = q_data_dst->fourcc;
+	coda980_h264 = dev->devtype->has_coda980_h264_abi &&
+		       dst_fourcc == V4L2_PIX_FMT_H264;
 
 	buf = v4l2_m2m_next_dst_buf(ctx->fh.m2m_ctx);
 	bitstream_buf = vb2_dma_contig_plane_dma_addr(&buf->vb2_buf, 0);
@@ -1304,9 +1316,24 @@ static int coda_start_encoding(struct coda_ctx *ctx)
 		ctx->params.h264_intra_qp_changed = false;
 
 		/* Rate control enabled */
-		value = (ctx->params.bitrate & CODA_RATECONTROL_BITRATE_MASK)
-			<< CODA_RATECONTROL_BITRATE_OFFSET;
-		value |=  1 & CODA_RATECONTROL_ENABLE_MASK;
+		if (coda980_h264) {
+			/*
+			 * The Coda980 H.264 encoder takes the enable bit and
+			 * the bitrate from RC_PARA2. Its RC_PARA keeps only
+			 * the initial delay and the skip-disable bit; the low
+			 * half is a delta-QP limit, not the bitrate.
+			 */
+			value = 0;
+			rc_para2 = (ctx->params.bitrate &
+				    CODA980_RATECONTROL_BITRATE_MASK)
+				   << CODA980_RATECONTROL_BITRATE_OFFSET;
+			rc_para2 |= CODA980_RATECONTROL_MODE_CBR;
+		} else {
+			value = (ctx->params.bitrate &
+				 CODA_RATECONTROL_BITRATE_MASK)
+				<< CODA_RATECONTROL_BITRATE_OFFSET;
+			value |=  1 & CODA_RATECONTROL_ENABLE_MASK;
+		}
 		value |= (ctx->params.vbv_delay &
 			  CODA_RATECONTROL_INITIALDELAY_MASK)
 			 << CODA_RATECONTROL_INITIALDELAY_OFFSET;
@@ -1316,11 +1343,12 @@ static int coda_start_encoding(struct coda_ctx *ctx)
 		value = 0;
 	}
 	coda_write(dev, value, CODA_CMD_ENC_SEQ_RC_PARA);
-	if (dev->devtype->has_coda980_h264_abi &&
-	    dst_fourcc == V4L2_PIX_FMT_H264) {
-		/* Coda980-specific RC registers are not part of the Coda960 ABI. */
-		coda_write(dev, 0, CODA9_CMD_ENC_SEQ_RC_PARA2);
+	if (coda980_h264) {
+		/* Zero when rate control is off; no QP range is set. */
+		coda_write(dev, rc_para2, CODA9_CMD_ENC_SEQ_RC_PARA2);
 		coda_write(dev, 0, CODA9_CMD_ENC_SEQ_QP_RANGE_SET);
+		coda_dbg(1, ctx, "RC_PARA 0x%08x RC_PARA2 0x%08x frame rate 0x%08x\n",
+			 value, rc_para2, ctx->params.framerate);
 	}
 
 	coda_write(dev, ctx->params.vbv_size, CODA_CMD_ENC_SEQ_RC_BUF_SIZE);
@@ -1418,6 +1446,19 @@ static int coda_start_encoding(struct coda_ctx *ctx)
 		goto out;
 	}
 	ctx->initialized = 1;
+
+	if (coda980_h264) {
+		/*
+		 * SEQ_INIT took the frame rate, intra refresh and slice mode
+		 * set before streaming. Do not repeat them in a parameter
+		 * change before the first picture: on Coda980 that change
+		 * would reach the rate control with a bitrate register the
+		 * driver has not written.
+		 */
+		ctx->params.framerate_changed = false;
+		ctx->params.intra_refresh_changed = false;
+		ctx->params.slice_mode_changed = false;
+	}
 
 	if (dst_fourcc != V4L2_PIX_FMT_JPEG) {
 		/* Coda980 uses two reconstruction buffers: current and reference. */
