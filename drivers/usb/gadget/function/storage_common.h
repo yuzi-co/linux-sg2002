@@ -124,6 +124,19 @@ static inline u8 usb_sense_ascq(u32 kc)
 #define SS_WRITE_PROTECTED			\
 	usb_sense_kc(DATA_PROTECT, WRITE_PROTECTED)
 
+/* Some used profiles from MMC-3 */
+#define MMC_PROFILE_NONE		0x0000
+#define MMC_PROFILE_CD_ROM		0x0008
+#define MMC_PROFILE_DVD_ROM		0x0010
+
+/*
+ * Maximum number of sectors of CD with MSF addressing.
+ * A bit paranoid value is calculated based on standard
+ * and store_cdrom_address() implementation.
+ * It is assumed that bigger images will be handled as DVD.
+ */
+#define CD_MAX_MSF_SECTORS	((255 * 59 * 74) - (2 * 75))
+
 /*
  * Vendor (8 chars), product (16 chars), release (4 hexadecimal digits) and NUL
  * byte
@@ -139,6 +152,7 @@ struct fsg_lun {
 	unsigned int	ro:1;
 	unsigned int	removable:1;
 	unsigned int	cdrom:1;
+	unsigned int	cd_as_dvd:1; /* Handle big CD as DVD if cdrom == 1 */
 	unsigned int	prevent_medium_removal:1;
 	unsigned int	registered:1;
 	unsigned int	info_valid:1;
