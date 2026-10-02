@@ -75,6 +75,13 @@ struct f_hidg {
 	 */
 	bool				use_out_ep;
 
+	/*
+	 * wakeup_on_write - if true, every report written to the character
+	 *                   device first asks the UDC to signal remote
+	 *                   wakeup, so a key press wakes a suspended host.
+	 */
+	bool				wakeup_on_write;
+
 	/* recv report */
 	spinlock_t			read_spinlock;
 	wait_queue_head_t		read_queue;
@@ -455,6 +462,15 @@ static ssize_t f_hidg_write(struct file *file, const char __user *buffer,
 	struct usb_request *req;
 	unsigned long flags;
 	ssize_t status = -ENOMEM;
+
+	/*
+	 * Ask for remote wakeup before the report is queued. The UDC
+	 * refuses when the host has not enabled remote wakeup or the bus
+	 * is not suspended, and the report then goes out as usual, so the
+	 * result is ignored.
+	 */
+	if (hidg->wakeup_on_write && hidg->func.config)
+		usb_gadget_wakeup(hidg->func.config->cdev->gadget);
 
 	spin_lock_irqsave(&hidg->write_spinlock, flags);
 
@@ -1381,6 +1397,7 @@ CONFIGFS_ATTR(f_hid_opts_, name)
 F_HID_OPT(subclass, 8, 255);
 F_HID_OPT(protocol, 8, 255);
 F_HID_OPT(no_out_endpoint, 8, 1);
+F_HID_OPT(wakeup_on_write, 8, 1);
 F_HID_OPT(report_length, 16, 65535);
 
 static ssize_t f_hid_opts_report_desc_show(struct config_item *item, char *page)
@@ -1488,6 +1505,7 @@ static struct configfs_attribute *hid_attrs[] = {
 	&f_hid_opts_attr_subclass,
 	&f_hid_opts_attr_protocol,
 	&f_hid_opts_attr_no_out_endpoint,
+	&f_hid_opts_attr_wakeup_on_write,
 	&f_hid_opts_attr_report_length,
 	&f_hid_opts_attr_interval,
 	&f_hid_opts_attr_report_desc,
@@ -1640,6 +1658,7 @@ static struct usb_function *hidg_alloc(struct usb_function_instance *fi)
 		}
 	}
 	hidg->use_out_ep = !opts->no_out_endpoint;
+	hidg->wakeup_on_write = opts->wakeup_on_write;
 
 	++opts->refcnt;
 	mutex_unlock(&opts->lock);
