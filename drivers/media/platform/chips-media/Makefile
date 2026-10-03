@@ -3,3 +3,4 @@
 obj-y += coda/
 obj-y += wave5/
 obj-y += wave420l/
+obj-y += sg2002-jpeg/
