@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config VIDEO_SG2002_JPEG
+	tristate "Sophgo SG2002 JPEG encoder"
+	depends on V4L_MEM2MEM_DRIVERS
+	depends on VIDEO_DEV && OF && HAS_DMA
+	depends on ARCH_SOPHGO || COMPILE_TEST
+	select V4L2_MEM2MEM_DEV
+	select VIDEOBUF2_DMA_CONTIG
+	help
+	  A V4L2 mem2mem driver for the Chips&Media JPEG unit of the
+	  Sophgo SG2002. It encodes NV12 and NV21 frames to baseline
+	  JPEG.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called sg2002-jpeg.
