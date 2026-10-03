@@ -41,6 +41,7 @@
 
 #include "coda.h"
 #include "imx-vdoa.h"
+#include "../sg2002-vc-sram/sg2002-vc-sram.h"
 
 #define CODA_NAME		"coda"
 
@@ -2060,6 +2061,47 @@ void coda_free_aux_buf(struct coda_dev *dev,
 	}
 }
 
+static int coda_hw_init(struct coda_dev *dev);
+
+/*
+ * SG2002: hold the codec SRAM while this context streams. The H.265 core
+ * takes it for its own streams; when it had it since the Coda980 firmware
+ * last booted, boot it again.
+ */
+static int coda_sram_acquire(struct coda_ctx *ctx)
+{
+	struct coda_dev *dev = ctx->dev;
+	int ret;
+
+	if (!dev->sram_ctrl || ctx->sram_held)
+		return 0;
+
+	ret = sg2002_vc_sram_acquire(SG2002_VC_SRAM_H264);
+	if (ret < 0) {
+		v4l2_err(&dev->v4l2_dev, "codec SRAM busy: H.265 is streaming\n");
+		return ret;
+	}
+	ctx->sram_held = true;
+	if (ret > 0) {
+		coda_dbg(1, ctx, "codec SRAM was switched away, booting the firmware\n");
+		ret = coda_hw_init(dev);
+		if (ret) {
+			sg2002_vc_sram_release(SG2002_VC_SRAM_H264);
+			ctx->sram_held = false;
+			return ret;
+		}
+	}
+	return 0;
+}
+
+static void coda_sram_release(struct coda_ctx *ctx)
+{
+	if (!ctx->sram_held)
+		return;
+	sg2002_vc_sram_release(SG2002_VC_SRAM_H264);
+	ctx->sram_held = false;
+}
+
 static int coda_start_streaming(struct vb2_queue *q, unsigned int count)
 {
 	struct coda_ctx *ctx = vb2_get_drv_priv(q);
@@ -2172,13 +2214,19 @@ static int coda_start_streaming(struct vb2_queue *q, unsigned int count)
 	if (ctx->mb_err_cnt_ctrl)
 		v4l2_ctrl_s_ctrl(ctx->mb_err_cnt_ctrl, 0);
 
+	ret = coda_sram_acquire(ctx);
+	if (ret)
+		goto err;
+
 	ret = ctx->ops->start_streaming(ctx);
 	if (ctx->inst_type == CODA_INST_DECODER) {
 		if (ret == -EAGAIN)
 			goto out;
 	}
-	if (ret < 0)
+	if (ret < 0) {
+		coda_sram_release(ctx);
 		goto err;
+	}
 
 out:
 	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT) {
@@ -2255,6 +2303,7 @@ static void coda_stop_streaming(struct vb2_queue *q)
 		ctx->runcounter = 0;
 		ctx->aborting = 0;
 		ctx->hold = false;
+		coda_sram_release(ctx);
 	}
 
 	if (!ctx->streamon_out && !ctx->streamon_cap)
@@ -2901,6 +2950,8 @@ static int coda_release(struct file *file)
 	if (ctx->dev->devtype->product == CODA_DX6)
 		coda_free_aux_buf(dev, &ctx->workbuf);
 
+	coda_sram_release(ctx);
+
 	v4l2_ctrl_handler_free(&ctx->ctrls);
 	coda_disable_clocks(dev);
 	pm_runtime_put_sync(dev->dev);
@@ -2935,15 +2986,24 @@ static int coda_hw_init(struct coda_dev *dev)
 	if (ret)
 		return ret;
 
+	/*
+	 * SG2002: the codec SRAM goes to H.264 for the boot. While the H.265
+	 * core streams with it, leave the core alone; the firmware boots when
+	 * an H.264 stream starts (coda_sram_acquire()).
+	 */
+	if (dev->sram_ctrl &&
+	    sg2002_vc_sram_switch(SG2002_VC_SRAM_H264, dev->sram_ctrl)) {
+		v4l2_info(&dev->v4l2_dev,
+			  "codec SRAM held by H.265, firmware boot deferred\n");
+		coda_disable_clocks(dev);
+		return 0;
+	}
+
 	if (dev->rstc) {
 		ret = coda_reset(dev);
 		if (ret)
 			goto err_disable_clocks;
 	}
-
-	if (dev->sram_ctrl)
-		writel(dev->devtype->sram_ctrl_value,
-		       dev->sram_ctrl + dev->devtype->sram_ctrl_offset);
 
 	if (!dev->devtype->skip_code_download) {
 		/*
