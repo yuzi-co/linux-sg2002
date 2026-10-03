@@ -102,6 +102,14 @@ static u32 coda980_me_line_buffer_mode(void)
 	return clamp(coda980_me_linebuf, 0, 2);
 }
 
+static bool coda_is_coda980_h264(struct coda_ctx *ctx)
+{
+	return ctx->dev->devtype->has_coda980_h264_abi &&
+	       ctx->codec->dst_fourcc == V4L2_PIX_FMT_H264;
+}
+
+static u32 coda980_gop_num(struct coda_ctx *ctx);
+
 static void coda_free_bitstream_buffer(struct coda_ctx *ctx);
 
 static inline int coda_is_initialized(struct coda_dev *dev)
@@ -823,11 +831,27 @@ static int coda_enc_param_change(struct coda_ctx *ctx)
 	int ret;
 
 	if (ctx->params.gop_size_changed) {
+		coda_dbg(1, ctx, "parameter change: GOP %u\n",
+			 ctx->params.gop_size);
 		change_enable |= CODA_PARAM_CHANGE_RC_GOP;
-		coda_write(dev, ctx->params.gop_size,
+		/*
+		 * Coda980 H.264: the same word SEQ_INIT takes, with the IDR
+		 * interval and the I picture QP offset.
+		 */
+		coda_write(dev, coda_is_coda980_h264(ctx) ?
+				coda980_gop_num(ctx) : ctx->params.gop_size,
 			   CODA_CMD_ENC_PARAM_RC_GOP);
 		ctx->gopcounter = ctx->params.gop_size - 1;
 		ctx->params.gop_size_changed = false;
+		/*
+		 * The Coda980 rate control takes the bitrate and frame rate
+		 * registers with any change of its parameters, and the
+		 * picture commands reuse those registers. Send both again.
+		 */
+		if (coda_is_coda980_h264(ctx) && ctx->params.bitrate) {
+			ctx->params.bitrate_changed = true;
+			ctx->params.framerate_changed = true;
+		}
 	}
 	if (ctx->params.h264_intra_qp_changed) {
 		coda_dbg(1, ctx, "parameter change: intra Qp %u\n",
@@ -1596,7 +1620,7 @@ static int coda_start_encoding(struct coda_ctx *ctx)
 
 	if (coda980_h264) {
 		/*
-		 * SEQ_INIT took the frame rate, intra refresh and slice mode
+		 * SEQ_INIT took the frame rate, GOP, intra refresh and slice mode
 		 * set before streaming. Do not repeat them in a parameter
 		 * change before the first picture: on Coda980 that change
 		 * would reach the rate control with a bitrate register the
@@ -1605,6 +1629,7 @@ static int coda_start_encoding(struct coda_ctx *ctx)
 		ctx->params.framerate_changed = false;
 		ctx->params.intra_refresh_changed = false;
 		ctx->params.slice_mode_changed = false;
+		ctx->params.gop_size_changed = false;
 	}
 
 	if (dst_fourcc != V4L2_PIX_FMT_JPEG) {
@@ -1851,7 +1876,12 @@ static int coda_prepare_encode(struct coda_ctx *ctx)
 	u32 rot_mode = 0;
 	u32 dst_fourcc;
 	u32 reg;
+	bool new_gop = false;
 	int ret;
+
+	/* On Coda980 a GOP change starts a new GOP at this picture. */
+	if (coda_is_coda980_h264(ctx) && ctx->params.gop_size)
+		new_gop = ctx->params.gop_size_changed;
 
 	ret = coda_enc_param_change(ctx);
 	if (ret < 0) {
@@ -1876,6 +1906,16 @@ static int coda_prepare_encode(struct coda_ctx *ctx)
 	force_ipicture = ctx->params.force_ipicture;
 	if (force_ipicture)
 		ctx->params.force_ipicture = false;
+	else if (new_gop)
+		force_ipicture = 1;
+	else if (coda_is_coda980_h264(ctx) && ctx->params.gop_size != 0)
+		/*
+		 * Count the GOP from the sequence start or the last GOP
+		 * change: gopcounter is gop_size - 1 on the GOP's first
+		 * picture.
+		 */
+		force_ipicture = ctx->gopcounter ==
+				 (int)ctx->params.gop_size - 1;
 	else if (ctx->params.gop_size != 0 &&
 		 (src_buf->sequence % ctx->params.gop_size) == 0)
 		force_ipicture = 1;
