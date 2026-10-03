@@ -2301,6 +2301,12 @@ static int coda_s_ctrl(struct v4l2_ctrl *ctrl)
 		break;
 	case V4L2_CID_MPEG_VIDEO_GOP_SIZE:
 		ctx->params.gop_size = ctrl->val;
+		/*
+		 * Coda980: apply it on the next picture through a parameter
+		 * change, not only at the next stream start.
+		 */
+		if (ctx->dev->devtype->has_coda980_h264_abi)
+			ctx->params.gop_size_changed = true;
 		break;
 	case V4L2_CID_MPEG_VIDEO_H264_I_FRAME_QP:
 		ctx->params.h264_intra_qp = ctrl->val;
@@ -2525,6 +2531,9 @@ static void coda_encode_ctrls(struct coda_ctx *ctx)
 		1920 * 1088 / 256, 1, 0);
 	v4l2_ctrl_new_std(&ctx->ctrls, &coda_ctrl_ops,
 		V4L2_CID_MPEG_VIDEO_VBV_DELAY, 0, 0x7fff, 1, 0);
+	/* coda_s_ctrl() handles it, but nothing created the control. */
+	v4l2_ctrl_new_std(&ctx->ctrls, &coda_ctrl_ops,
+		V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME, 0, 0, 0, 0);
 	/*
 	 * The maximum VBV size value is 0x7fffffff bits,
 	 * one bit less than 262144 KiB
