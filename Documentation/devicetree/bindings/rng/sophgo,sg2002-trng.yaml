@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/rng/sophgo,sg2002-trng.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Sophgo SG2002 random number generator
+
+maintainers:
+  - George Whewell <georgerw@gmail.com>
+
+description: |
+  The SG2002 security subsystem contains a DesignWare NIST random number
+  generator. Its register interface shares the eFuse clocks.
+
+properties:
+  compatible:
+    const: sophgo,sg2002-trng
+
+  reg:
+    maxItems: 1
+
+  clocks:
+    maxItems: 2
+
+  clock-names:
+    items:
+      - const: core
+      - const: apb
+
+required:
+  - compatible
+  - reg
+  - clocks
+  - clock-names
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/sophgo,sg2002-clk.h>
+
+    rng@2070000 {
+        compatible = "sophgo,sg2002-trng";
+        reg = <0x02070000 0x1000>;
+        clocks = <&clk CLK_EFUSE>, <&clk CLK_APB_EFUSE>;
+        clock-names = "core", "apb";
+    };
