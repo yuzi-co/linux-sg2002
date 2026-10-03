@@ -84,6 +84,24 @@ static int coda980_intra_weight;
 module_param(coda980_intra_weight, int, 0644);
 MODULE_PARM_DESC(coda980_intra_weight, "Coda980 H.264: intra cost weight");
 
+/*
+ * The Coda980 motion estimation splits its memory between a reference line
+ * buffer and the integer search memory: mode 0 gives 36 lines (vertical
+ * search -16..15) and 13.75 KiB of search memory, mode 1 68 lines and
+ * 8.25 KiB, mode 2 100 lines (-48..47) and 2.75 KiB. Sophgo's cv18xx vcodec
+ * uses mode 0. On the SG2002, P pictures wider than 1024 pixels predict from
+ * the wrong reference in mode 2, and wider than 1152 in mode 1.
+ */
+static int coda980_me_linebuf;
+module_param(coda980_me_linebuf, int, 0644);
+MODULE_PARM_DESC(coda980_me_linebuf,
+		 "Coda980 H.264: ME line-buffer mode, 0 (36 lines) to 2 (100 lines)");
+
+static u32 coda980_me_line_buffer_mode(void)
+{
+	return clamp(coda980_me_linebuf, 0, 2);
+}
+
 static void coda_free_bitstream_buffer(struct coda_ctx *ctx);
 
 static inline int coda_is_initialized(struct coda_dev *dev)
@@ -1552,7 +1570,7 @@ static int coda_start_encoding(struct coda_ctx *ctx)
 			break;
 		case CODA_960:
 			if (dev->devtype->has_coda980_h264_abi)
-				coda_write(dev, CODA980_ME_LINE_BUFFER_MODE <<
+				coda_write(dev, coda980_me_line_buffer_mode() <<
 					   CODA980_ME_LINE_BUFFER_MODE_SHIFT,
 					   CODA9_CMD_ENC_SEQ_ME_OPTION);
 			else
@@ -1976,6 +1994,11 @@ static int coda_prepare_encode(struct coda_ctx *ctx)
 	if (dev->devtype->product != CODA_DX6)
 		coda_write(dev, ctx->iram_info.axi_sram_use,
 				CODA7_REG_BIT_AXI_SRAM_USE);
+
+	/* The ME block reads its line-buffer mode from its own register. */
+	if (dev->devtype->has_coda980_h264_abi)
+		coda_write(dev, coda980_me_line_buffer_mode(),
+			   CODA980_REG_ME_LINEBUFFER_MODE);
 
 	trace_coda_enc_pic_run(ctx, src_buf);
 
