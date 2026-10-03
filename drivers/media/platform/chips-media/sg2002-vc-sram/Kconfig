@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config VIDEO_SG2002_VC_SRAM
+	tristate
+	help
+	  The arbiter for the codec SRAM of the Sophgo SG2002, which the
+	  Coda980 (H.264) and WAVE420L (H.265) drivers take in turns. It is
+	  selected by the drivers that need it.
