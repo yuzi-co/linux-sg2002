@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config VIDEO_WAVE420L
+	tristate "Chips&Media WAVE420L H.265 encoder for the Sophgo SG2002"
+	depends on V4L_MEM2MEM_DRIVERS
+	depends on VIDEO_DEV && OF && HAS_DMA
+	depends on ARCH_SOPHGO || COMPILE_TEST
+	select VIDEOBUF2_DMA_CONTIG
+	select V4L2_MEM2MEM_DEV
+	select VIDEO_SG2002_VC_SRAM
+	help
+	  A V4L2 mem2mem driver for the WAVE420L H.265 encoder core of the
+	  Sophgo SG2002: NV12 or NV21 in, HEVC Main profile out. It needs
+	  the core's firmware, monet.bin, which is not redistributable and
+	  is not part of linux-firmware.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called wave420l.
