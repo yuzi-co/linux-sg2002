@@ -165,6 +165,7 @@
 			reg = <0x030f0000 0x1000>;
 			clocks = <&clk CLK_SARADC>;
 			interrupts = <SOC_PERIPHERAL_IRQ(84) IRQ_TYPE_LEVEL_HIGH>;
+			#io-channel-cells = <1>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 			status = "disabled";
