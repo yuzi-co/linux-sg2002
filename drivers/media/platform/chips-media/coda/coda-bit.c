@@ -41,6 +41,49 @@
 #define CODA_DEFAULT_GAMMA	4096
 #define CODA9_DEFAULT_GAMMA	24576	/* 0.75 * 32768 */
 
+/* Initial rate-control delay in ms when V4L2_CID_MPEG_VIDEO_VBV_DELAY is 0 */
+#define CODA980_DEFAULT_VBV_DELAY	1000
+
+/*
+ * Coda980 H.264 rate-control options. They are read when a stream starts,
+ * so a change through sysfs applies to the next stream without reloading
+ * the module. The register layouts follow Sophgo's cv18xx vcodec
+ * (vpuapi/coda9/coda9.c, PRODUCT_ID_980) and NXP's coda980 driver.
+ */
+static int coda980_idr_interval = 1;
+module_param(coda980_idr_interval, int, 0644);
+MODULE_PARM_DESC(coda980_idr_interval,
+		 "Coda980 H.264: every n-th GOP I picture is an IDR (0: only the first)");
+
+static int coda980_iqp_offset = 16;
+module_param(coda980_iqp_offset, int, 0644);
+MODULE_PARM_DESC(coda980_iqp_offset,
+		 "Coda980 H.264: GOP I picture QP offset, -8..7 (16: off)");
+
+static int coda980_gamma = -1;
+module_param(coda980_gamma, int, 0644);
+MODULE_PARM_DESC(coda980_gamma,
+		 "Coda980 H.264: rate-control gamma, 0..32767 (-1: off)");
+
+static int coda980_hvs = -1;
+module_param(coda980_hvs, int, 0644);
+MODULE_PARM_DESC(coda980_hvs,
+		 "Coda980 H.264: HVS QP scale div2, 0..3, with a delta QP limit of 8 (-1: off)");
+
+static bool coda980_row_rc = true;
+module_param(coda980_row_rc, bool, 0644);
+MODULE_PARM_DESC(coda980_row_rc,
+		 "Coda980 H.264: row-level rate control; without it the picture QP never follows the bitrate");
+
+static int coda980_rc_interval = -1;
+module_param(coda980_rc_interval, int, 0644);
+MODULE_PARM_DESC(coda980_rc_interval,
+		 "Coda980 H.264: RC_INTERVAL_MODE word, mb_interval << 2 | mode (-1: from the RC controls)");
+
+static int coda980_intra_weight;
+module_param(coda980_intra_weight, int, 0644);
+MODULE_PARM_DESC(coda980_intra_weight, "Coda980 H.264: intra cost weight");
+
 static void coda_free_bitstream_buffer(struct coda_ctx *ctx);
 
 static inline int coda_is_initialized(struct coda_dev *dev)
@@ -1140,6 +1183,58 @@ static int coda_encoder_reqbufs(struct coda_ctx *ctx,
 	return 0;
 }
 
+/*
+ * Coda980 H.264 GOP_NUM: the GOP size in the low bits, the IDR interval in
+ * GOPs from bit 21, and an optional QP offset for the GOP's I picture (enable
+ * bit 20, 4-bit offset from bit 16).
+ */
+static u32 coda980_gop_num(struct coda_ctx *ctx)
+{
+	u32 value = ctx->params.gop_size;
+
+	if (coda980_idr_interval > 0)
+		value |= min(coda980_idr_interval, 0x7ff) <<
+			 CODA980_GOP_IDR_INTERVAL_OFFSET;
+	if (coda980_iqp_offset >= -8 && coda980_iqp_offset <= 7)
+		value |= CODA980_GOP_IQP_OFFSET_ENABLE |
+			 (coda980_iqp_offset & 0xf) << CODA980_GOP_IQP_OFFSET_OFFSET;
+	return value;
+}
+
+/* One QP_RANGE_SET field: the QP and its enable bit, or 0 for no limit. */
+static u32 coda980_qp_field(int qp, int no_limit)
+{
+	if (qp == no_limit)
+		return 0;
+	return CODA980_QP_RANGE_ENABLE | (qp & CODA980_QP_RANGE_QP_MASK);
+}
+
+/*
+ * Coda980 H.264 QP_RANGE_SET: minimum and maximum QP for P pictures in the
+ * upper half and for I pictures in the lower half (Sophgo's layout; NXP's
+ * driver programs only the lower half). V4L2_CID_MPEG_VIDEO_H264_MIN_QP and
+ * MAX_QP bound both picture types; the I and P frame controls narrow that
+ * range for their own type.
+ */
+static u32 coda980_qp_range(struct coda_ctx *ctx)
+{
+	struct coda_params *p = &ctx->params;
+	int min_i = max(p->h264_min_qp, p->h264_i_min_qp);
+	int max_i = min(p->h264_max_qp, p->h264_i_max_qp);
+	int min_p = max(p->h264_min_qp, p->h264_p_min_qp);
+	int max_p = min(p->h264_max_qp, p->h264_p_max_qp);
+
+	if (max_i < min_i)
+		max_i = min_i;
+	if (max_p < min_p)
+		max_p = min_p;
+
+	return coda980_qp_field(min_p, 0) << 24 |
+	       coda980_qp_field(max_p, 51) << 16 |
+	       coda980_qp_field(min_i, 0) << 8 |
+	       coda980_qp_field(max_i, 51);
+}
+
 static int coda_start_encoding(struct coda_ctx *ctx)
 {
 	struct coda_dev *dev = ctx->dev;
@@ -1150,6 +1245,7 @@ static int coda_start_encoding(struct coda_ctx *ctx)
 	int gamma, ret, value;
 	bool coda980_h264;
 	u32 rc_para2 = 0;
+	u32 vbv_delay;
 	u32 dst_fourcc;
 	int num_fb;
 	u32 stride;
@@ -1307,6 +1403,8 @@ static int coda_start_encoding(struct coda_ctx *ctx)
 		value = coda_slice_mode(ctx);
 		coda_write(dev, value, CODA_CMD_ENC_SEQ_SLICE_MODE);
 		value = ctx->params.gop_size;
+		if (coda980_h264)
+			value = coda980_gop_num(ctx);
 		coda_write(dev, value, CODA_CMD_ENC_SEQ_GOP_SIZE);
 	}
 
@@ -1328,14 +1426,28 @@ static int coda_start_encoding(struct coda_ctx *ctx)
 				    CODA980_RATECONTROL_BITRATE_MASK)
 				   << CODA980_RATECONTROL_BITRATE_OFFSET;
 			rc_para2 |= CODA980_RATECONTROL_MODE_CBR;
+			if (coda980_hvs >= 0) {
+				value |= CODA980_RC_HVS_MAX_DELTA_QP;
+				rc_para2 |= CODA980_RC_HVS_QP_ENABLE |
+					    (min(coda980_hvs, 3) <<
+					     CODA980_RC_HVS_QP_SCALE_OFFSET);
+			}
+			if (coda980_row_rc)
+				rc_para2 |= CODA980_RC_ROW_LEVEL_ENABLE;
 		} else {
 			value = (ctx->params.bitrate &
 				 CODA_RATECONTROL_BITRATE_MASK)
 				<< CODA_RATECONTROL_BITRATE_OFFSET;
 			value |=  1 & CODA_RATECONTROL_ENABLE_MASK;
 		}
-		value |= (ctx->params.vbv_delay &
-			  CODA_RATECONTROL_INITIALDELAY_MASK)
+		vbv_delay = ctx->params.vbv_delay;
+		/*
+		 * With no initial delay the Coda980 rate control holds every
+		 * picture at QP 49 to 51 and pads the stream to the bitrate.
+		 */
+		if (coda980_h264 && !vbv_delay)
+			vbv_delay = CODA980_DEFAULT_VBV_DELAY;
+		value |= (vbv_delay & CODA_RATECONTROL_INITIALDELAY_MASK)
 			 << CODA_RATECONTROL_INITIALDELAY_OFFSET;
 		if (dev->devtype->product == CODA_960)
 			value |= BIT(31); /* disable autoskip */
@@ -1344,11 +1456,21 @@ static int coda_start_encoding(struct coda_ctx *ctx)
 	}
 	coda_write(dev, value, CODA_CMD_ENC_SEQ_RC_PARA);
 	if (coda980_h264) {
-		/* Zero when rate control is off; no QP range is set. */
+		u32 qp_range = rc_para2 ? coda980_qp_range(ctx) : 0;
+
+		/* All zero when rate control is off. */
 		coda_write(dev, rc_para2, CODA9_CMD_ENC_SEQ_RC_PARA2);
-		coda_write(dev, 0, CODA9_CMD_ENC_SEQ_QP_RANGE_SET);
-		coda_dbg(1, ctx, "RC_PARA 0x%08x RC_PARA2 0x%08x frame rate 0x%08x\n",
-			 value, rc_para2, ctx->params.framerate);
+		coda_write(dev, qp_range, CODA9_CMD_ENC_SEQ_QP_RANGE_SET);
+		/*
+		 * No intra picture size limit and no picture delta-QP limits.
+		 * The firmware reads both at SEQ_INIT, and nothing else in the
+		 * driver writes them, so leave nothing behind from an earlier
+		 * command.
+		 */
+		coda_write(dev, 0, CODA980_CMD_ENC_SEQ_RC_MAX_INTRA_SIZE);
+		coda_write(dev, 0, CODA980_CMD_ENC_SEQ_DELTA_QP);
+		coda_dbg(1, ctx, "RC_PARA 0x%08x RC_PARA2 0x%08x QP_RANGE 0x%08x frame rate 0x%08x\n",
+			 value, rc_para2, qp_range, ctx->params.framerate);
 	}
 
 	coda_write(dev, ctx->params.vbv_size, CODA_CMD_ENC_SEQ_RC_BUF_SIZE);
@@ -1361,7 +1483,7 @@ static int coda_start_encoding(struct coda_ctx *ctx)
 
 	value = 0;
 	if (dev->devtype->has_coda980_h264_abi)
-		gamma = 0;
+		gamma = coda980_h264 && coda980_gamma >= 0 ? coda980_gamma : 0;
 	else if (dev->devtype->product == CODA_960)
 		gamma = CODA9_DEFAULT_GAMMA;
 	else
@@ -1381,7 +1503,10 @@ static int coda_start_encoding(struct coda_ctx *ctx)
 			   ctx->params.h264_max_qp << CODA_QPMAX_OFFSET,
 			   CODA_CMD_ENC_SEQ_RC_QP_MIN_MAX);
 	}
-	if (!dev->devtype->has_coda980_h264_abi) {
+	if (dev->devtype->has_coda980_h264_abi) {
+		if (gamma > 0)
+			value |= 1 << CODA9_OPTION_GAMMA_OFFSET;
+	} else {
 		if (dev->devtype->product == CODA_960) {
 			if (ctx->params.h264_max_qp)
 				value |= 1 << CODA9_OPTION_RCQPMAX_OFFSET;
@@ -1406,6 +1531,8 @@ static int coda_start_encoding(struct coda_ctx *ctx)
 		value = 1;
 	else
 		value = 0;
+	if (coda980_h264 && coda980_rc_interval >= 0)
+		value = coda980_rc_interval;
 	coda_write(dev, value, CODA_CMD_ENC_SEQ_RC_INTERVAL_MODE);
 
 	coda_setup_iram(ctx);
@@ -1430,7 +1557,9 @@ static int coda_start_encoding(struct coda_ctx *ctx)
 					   CODA9_CMD_ENC_SEQ_ME_OPTION);
 			else
 				coda_write(dev, 0, CODA9_CMD_ENC_SEQ_ME_OPTION);
-			coda_write(dev, 0, CODA9_CMD_ENC_SEQ_INTRA_WEIGHT);
+			coda_write(dev, coda980_h264 ?
+				   max(coda980_intra_weight, 0) : 0,
+				   CODA9_CMD_ENC_SEQ_INTRA_WEIGHT);
 		}
 	}
 

@@ -151,6 +151,10 @@ struct coda_params {
 	u8			h264_inter_qp;
 	u8			h264_min_qp;
 	u8			h264_max_qp;
+	u8			h264_i_min_qp;
+	u8			h264_i_max_qp;
+	u8			h264_p_min_qp;
+	u8			h264_p_max_qp;
 	u8			h264_disable_deblocking_filter_idc;
 	s8			h264_slice_alpha_c0_offset_div2;
 	s8			h264_slice_beta_offset_div2;
