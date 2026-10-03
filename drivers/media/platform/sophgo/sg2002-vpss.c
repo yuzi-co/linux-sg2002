@@ -60,6 +60,7 @@
 /* ---- IMG_IN_V (base + 0x2000) ---- */
 #define IMG_BASE		0x2000
 #define IMG_CFG			(IMG_BASE + 0x00) /* bit31 fclk, bit12 csc, bit8..11 burst, bit4..7 fmt, bit0..1 src */
+#define  IMG_CFG_CSC_EN		BIT(12)
 #define IMG_OFFSET		(IMG_BASE + 0x04)
 #define IMG_SIZE		(IMG_BASE + 0x08) /* (h-1)<<16 | (w-1) */
 #define IMG_PITCH_Y		(IMG_BASE + 0x0c)
@@ -68,6 +69,22 @@
 #define IMG_ADDR0_L		(IMG_BASE + 0x24)
 #define IMG_ADDR1_L		(IMG_BASE + 0x2c)
 #define IMG_ADDR2_L		(IMG_BASE + 0x34)
+/*
+ * Input CSC, applied to the source before the scaler:
+ *   out[i] = sum_j coef[i][j] * (in[j] - sub[j]) + add[i]
+ * Coefficients are sign-magnitude, bit 13 the sign, 1.0 = 1024. The layout
+ * is Sophgo's sclr_img_set_csc: COEF0 = c01 << 16 | c00, COEF1 = c02,
+ * COEF2 = c11 << 16 | c10, COEF3 = c12, COEF4 = c21 << 16 | c20,
+ * COEF5 = c22; SUB and ADD hold one byte per component.
+ */
+#define IMG_CSC_COEF0		(IMG_BASE + 0x40)
+#define IMG_CSC_COEF1		(IMG_BASE + 0x44)
+#define IMG_CSC_COEF2		(IMG_BASE + 0x48)
+#define IMG_CSC_COEF3		(IMG_BASE + 0x4c)
+#define IMG_CSC_COEF4		(IMG_BASE + 0x50)
+#define IMG_CSC_COEF5		(IMG_BASE + 0x54)
+#define IMG_CSC_SUB		(IMG_BASE + 0x58)
+#define IMG_CSC_ADD		(IMG_BASE + 0x5c)
 #define IMG_FIFO_THR		(IMG_BASE + 0x60)
 #define IMG_OUTSTANDING		(IMG_BASE + 0x64)
 #define IMG_DBG			(IMG_BASE + 0x68) /* bit18 ip_clr, toggle before start */
@@ -184,6 +201,12 @@ struct vpss_ctx {
 	u32			xfer_func;
 	u32			ycbcr_enc;
 	u32			quantization;
+	/*
+	 * The CAPTURE queue's range. It follows the source unless CAPTURE
+	 * asks for full range from a limited-range source, which the input
+	 * CSC then expands (16..235 and 16..240 to 0..255).
+	 */
+	u32			cap_quantization;
 	/* CAPTURE-side crop: the visible image inside the (possibly
 	 * macroblock-padded) CAPTURE surface.  The scaler produces the
 	 * crop geometry; the format geometry only sets the plane layout
@@ -321,6 +344,15 @@ static void vpss_hw_init(struct vpss_dev *vpss)
 	vpss_load_coef(vpss, false);
 }
 
+#define VPSS_CSC_Y_GAIN		1193	/* 255/219 = 1.1644, x1024 */
+#define VPSS_CSC_C_GAIN		1166	/* 255/224 = 1.1384, x1024 */
+
+static bool vpss_expands_range(const struct vpss_ctx *ctx)
+{
+	return ctx->quantization == V4L2_QUANTIZATION_LIM_RANGE &&
+	       ctx->cap_quantization == V4L2_QUANTIZATION_FULL_RANGE;
+}
+
 static void vpss_job_hw(struct vpss_dev *vpss, struct vpss_ctx *ctx,
 			dma_addr_t src, dma_addr_t dst)
 {
@@ -330,12 +362,28 @@ static void vpss_job_hw(struct vpss_dev *vpss, struct vpss_ctx *ctx,
 	u32 dw = ctx->crop.width, dh = ctx->crop.height;
 	u32 ratio;
 	bool scale = (sw != dw) || (sh != dh);
+	bool expand = vpss_expands_range(ctx);
 
-	/* IMG_IN_V: DRAM source, no input CSC */
+	/* IMG_IN_V: DRAM source; the input CSC only to expand the range */
 	vpss_write(vpss, IMG_FIFO_THR,
 		   (q_in->fmt->is_420sp ? 0x40 << 16 : 0x80 << 16) | 0x80);
 	vpss_write(vpss, IMG_OUTSTANDING, 0xf);
+	if (expand) {
+		/*
+		 * Y' = 255/219 (Y - 16), C' = 255/224 (C - 128) + 128, with
+		 * the gains rounded up so 235 and 240 reach 255.
+		 */
+		vpss_write(vpss, IMG_CSC_COEF0, VPSS_CSC_Y_GAIN);
+		vpss_write(vpss, IMG_CSC_COEF1, 0);
+		vpss_write(vpss, IMG_CSC_COEF2, VPSS_CSC_C_GAIN << 16);
+		vpss_write(vpss, IMG_CSC_COEF3, 0);
+		vpss_write(vpss, IMG_CSC_COEF4, 0);
+		vpss_write(vpss, IMG_CSC_COEF5, VPSS_CSC_C_GAIN);
+		vpss_write(vpss, IMG_CSC_SUB, (128 << 16) | (128 << 8) | 16);
+		vpss_write(vpss, IMG_CSC_ADD, (128 << 16) | (128 << 8) | 0);
+	}
 	vpss_write(vpss, IMG_CFG,
+		   (expand ? IMG_CFG_CSC_EN : 0) |
 		   (IMG_BURST_DEFAULT << 8) | (q_in->fmt->hw_fmt << 4) | IMG_SRC_MEM);
 	vpss_write(vpss, IMG_OFFSET, 0);
 	vpss_write(vpss, IMG_SIZE, ((sh - 1) << 16) | (sw - 1));
@@ -469,12 +517,12 @@ static int vpss_enum_framesizes(struct file *file, void *priv,
 }
 
 static void vpss_get_colorimetry(struct vpss_ctx *ctx,
-			       struct v4l2_pix_format *pix)
+			       struct v4l2_pix_format *pix, bool output)
 {
 	pix->colorspace = ctx->colorspace;
 	pix->xfer_func = ctx->xfer_func;
 	pix->ycbcr_enc = ctx->ycbcr_enc;
-	pix->quantization = ctx->quantization;
+	pix->quantization = output ? ctx->quantization : ctx->cap_quantization;
 }
 
 static int vpss_g_fmt(struct file *file, void *priv, struct v4l2_format *f)
@@ -489,7 +537,7 @@ static int vpss_g_fmt(struct file *file, void *priv, struct v4l2_format *f)
 	pix->field = V4L2_FIELD_NONE;
 	pix->bytesperline = q_data->bytesperline;
 	pix->sizeimage = q_data->sizeimage;
-	vpss_get_colorimetry(ctx, pix);
+	vpss_get_colorimetry(ctx, pix, V4L2_TYPE_IS_OUTPUT(f->type));
 	return 0;
 }
 
@@ -522,8 +570,17 @@ static int vpss_try_fmt(struct file *file, void *priv, struct v4l2_format *f)
 			pix->quantization = V4L2_MAP_QUANTIZATION_DEFAULT(false,
 						pix->colorspace, pix->ycbcr_enc);
 	} else {
-		/* No colour conversion: CAPTURE cannot request a different matrix. */
-		vpss_get_colorimetry(ctx, pix);
+		u32 want = pix->quantization;
+
+		/*
+		 * The matrix and transfer function follow the source. The
+		 * range does too, except that a limited-range source can be
+		 * expanded to full range, which is what JPEG (JFIF) expects.
+		 */
+		vpss_get_colorimetry(ctx, pix, true);
+		if (want == V4L2_QUANTIZATION_FULL_RANGE &&
+		    ctx->quantization == V4L2_QUANTIZATION_LIM_RANGE)
+			pix->quantization = V4L2_QUANTIZATION_FULL_RANGE;
 	}
 	return 0;
 }
@@ -559,6 +616,10 @@ static int vpss_s_fmt(struct file *file, void *priv, struct v4l2_format *f)
 		ctx->xfer_func = pix->xfer_func;
 		ctx->ycbcr_enc = pix->ycbcr_enc;
 		ctx->quantization = pix->quantization;
+		if (!vpss_expands_range(ctx))
+			ctx->cap_quantization = ctx->quantization;
+	} else {
+		ctx->cap_quantization = f->fmt.pix.quantization;
 	}
 
 	q_data = vpss_get_q_data(ctx, f->type);
@@ -900,6 +961,7 @@ static int vpss_open(struct file *file)
 	ctx->xfer_func = V4L2_XFER_FUNC_709;
 	ctx->ycbcr_enc = V4L2_YCBCR_ENC_709;
 	ctx->quantization = V4L2_QUANTIZATION_LIM_RANGE;
+	ctx->cap_quantization = V4L2_QUANTIZATION_LIM_RANGE;
 	v4l2_fh_init(&ctx->fh, video_devdata(file));
 	file->private_data = ctx;
 	v4l2_fh_add(&ctx->fh, file);
