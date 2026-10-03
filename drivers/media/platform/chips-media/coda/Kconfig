@@ -9,6 +9,7 @@ config VIDEO_CODA
 	select VIDEOBUF2_VMALLOC
 	select V4L2_JPEG_HELPER
 	select V4L2_MEM2MEM_DEV
+	select VIDEO_SG2002_VC_SRAM if ARCH_SOPHGO
 	select GENERIC_ALLOCATOR
 	help
 	   Coda is a range of video codec IPs that supports
