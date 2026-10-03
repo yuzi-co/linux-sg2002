@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/nvmem/sophgo,sg2002-efuse.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Sophgo SG2002 eFuse
+
+maintainers:
+  - George Whewell <georgerw@gmail.com>
+
+description: |
+  The controller provides a 256-byte logical shadow aperture at offset 0x100.
+  The eight-byte factory UID occupies shadow offsets 0x0c..0x13. The ten
+  public user words occupy offsets 0x40, 0x48, ..., 0x88 within that
+  aperture. The eight-byte device ID starts at shadow offset 0x8c. These
+  offsets are relative to the shadow aperture, not to the controller base.
+  The device ID is not specified to be a unique serial number.
+
+allOf:
+  - $ref: nvmem.yaml#
+
+properties:
+  compatible:
+    const: sophgo,sg2002-efuse
+
+  reg:
+    maxItems: 1
+
+  clocks:
+    maxItems: 2
+
+  clock-names:
+    items:
+      - const: efuse
+      - const: apb
+
+required:
+  - compatible
+  - reg
+  - clocks
+  - clock-names
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/sophgo,cv1800.h>
+
+    efuse@3050000 {
+        compatible = "sophgo,sg2002-efuse";
+        reg = <0x03050000 0x1000>;
+        clocks = <&clk CLK_EFUSE>, <&clk CLK_APB_EFUSE>;
+        clock-names = "efuse", "apb";
+
+        nvmem-layout {
+            compatible = "fixed-layout";
+            #address-cells = <1>;
+            #size-cells = <1>;
+
+            uid@c {
+                reg = <0x0c 0x8>;
+            };
+        };
+    };
