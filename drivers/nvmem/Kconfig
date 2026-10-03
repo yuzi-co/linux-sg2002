@@ -504,6 +504,15 @@ config NVMEM_STM32_ROMEM
 	  This driver can also be built as a module. If so, the module
 	  will be called nvmem-stm32-romem.
 
+config NVMEM_SG2002_EFUSE
+	tristate "Sophgo SG2002 public eFuse shadow support"
+	depends on ARCH_SOPHGO || COMPILE_TEST
+	depends on HAS_IOMEM
+	help
+	  Read the factory UID, public user words and device ID from the
+	  SG2002 eFuse shadow registers. Other fields are hidden. Fuse
+	  programming is not supported. The module is called sg2002-efuse.
+
 config NVMEM_SUNPLUS_OCOTP
 	tristate "Sunplus SoC OTP support"
 	depends on SOC_SP7021 || COMPILE_TEST
