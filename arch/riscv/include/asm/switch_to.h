@@ -116,9 +116,12 @@ do {							\
 	struct task_struct *__prev = (prev);		\
 	struct task_struct *__next = (next);		\
 	__set_prev_cpu(__prev->thread);			\
+	/* C906 FCSR aliases VXRM/VXSAT: save V before restoring next FCSR. */ \
+	if (has_xtheadvector())				\
+		__switch_to_vector(__prev, __next);	\
 	if (has_fpu())					\
 		__switch_to_fpu(__prev, __next);	\
-	if (has_vector() || has_xtheadvector())		\
+	if (has_vector() && !has_xtheadvector())		\
 		__switch_to_vector(__prev, __next);	\
 	if (has_srmcfg())				\
 		__switch_to_srmcfg(__next);		\
