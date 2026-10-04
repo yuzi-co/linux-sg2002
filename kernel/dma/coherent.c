@@ -140,7 +140,8 @@ void dma_release_coherent_memory(struct device *dev)
 
 static void *__dma_alloc_from_coherent(struct device *dev,
 				       struct dma_coherent_mem *mem,
-				       ssize_t size, dma_addr_t *dma_handle)
+				       ssize_t size, dma_addr_t *dma_handle,
+				       bool clear)
 {
 	int order = get_order(size);
 	unsigned long flags;
@@ -163,7 +164,8 @@ static void *__dma_alloc_from_coherent(struct device *dev,
 			((dma_addr_t)pageno << PAGE_SHIFT);
 	ret = mem->virt_base + ((dma_addr_t)pageno << PAGE_SHIFT);
 	spin_unlock_irqrestore(&mem->spinlock, flags);
-	memset(ret, 0, size);
+	if (clear)
+		memset(ret, 0, size);
 	return ret;
 err:
 	spin_unlock_irqrestore(&mem->spinlock, flags);
@@ -177,22 +179,30 @@ err:
  * @dma_handle:	This will be filled with the correct dma handle
  * @ret:	This pointer will be filled with the virtual address
  *		to allocated area.
+ * @attrs:	DMA_ATTR_* of the allocation
  *
  * This function should be only called from per-arch dma_alloc_coherent()
  * to support allocation from per-device coherent memory pools.
+ *
+ * The memory is cleared, unless @attrs has DMA_ATTR_NO_KERNEL_MAPPING: the
+ * CPU does not use such a buffer, and dma-direct does not clear it either.
+ * The pool's mapping is write-combined or uncached, so clearing the frame
+ * buffers a video codec allocates at every stream start costs milliseconds
+ * a megabyte.
  *
  * Returns 0 if dma_alloc_coherent should continue with allocating from
  * generic memory areas, or !0 if dma_alloc_coherent should return @ret.
  */
 int dma_alloc_from_dev_coherent(struct device *dev, ssize_t size,
-		dma_addr_t *dma_handle, void **ret)
+		dma_addr_t *dma_handle, void **ret, unsigned long attrs)
 {
 	struct dma_coherent_mem *mem = dev_get_coherent_memory(dev);
 
 	if (!mem)
 		return 0;
 
-	*ret = __dma_alloc_from_coherent(dev, mem, size, dma_handle);
+	*ret = __dma_alloc_from_coherent(dev, mem, size, dma_handle,
+					 !(attrs & DMA_ATTR_NO_KERNEL_MAPPING));
 	return 1;
 }
 
@@ -286,7 +296,7 @@ void *dma_alloc_from_global_coherent(struct device *dev, ssize_t size,
 		return NULL;
 
 	return __dma_alloc_from_coherent(dev, dma_coherent_default_memory, size,
-					 dma_handle);
+					 dma_handle, true);
 }
 
 int dma_release_from_global_coherent(int order, void *vaddr)
