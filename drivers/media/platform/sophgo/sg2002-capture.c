@@ -1010,6 +1010,14 @@ static int sg2002_queue_setup(struct vb2_queue *q, unsigned int *num_buffers,
 
 	*num_planes = 1;
 	sizes[0] = cap->sizeimage;
+	/*
+	 * A packed YUV frame gets room for its height rounded up to 16
+	 * lines, which the JPEG unit reads when it encodes the buffer in
+	 * place. The pool hands out power-of-two blocks, so a 1080p frame
+	 * takes the same 4 MiB either way; sizeimage stays the frame's.
+	 */
+	if (cap->yuv_input)
+		sizes[0] = max(sizes[0], cap->bytesperline * ALIGN(cap->height, 16));
 	return 0;
 }
 
