@@ -97,6 +97,17 @@ module_param(coda980_me_linebuf, int, 0644);
 MODULE_PARM_DESC(coda980_me_linebuf,
 		 "Coda980 H.264: ME line-buffer mode, 0 (36 lines) to 2 (100 lines)");
 
+/*
+ * The secondary AXI buffers the encoder keeps in the codec SRAM instead of
+ * DRAM: bit 0 the BIT processor's, bit 1 intra prediction AC/DC, bit 2 the
+ * deblocking filter's luma line buffer, bit 3 its chroma one. Sophgo's
+ * cv18xx vcodec uses all four for H.264. Read at every stream start.
+ */
+static int coda980_sram_axi = 0xf;
+module_param(coda980_sram_axi, int, 0644);
+MODULE_PARM_DESC(coda980_sram_axi,
+		 "Coda980 H.264: secondary AXI buffers in the codec SRAM, bit 0 BIT, 1 IP, 2 DBK luma, 3 DBK chroma");
+
 static u32 coda980_me_line_buffer_mode(void)
 {
 	return clamp(coda980_me_linebuf, 0, 2);
@@ -935,6 +946,55 @@ static phys_addr_t coda_iram_alloc(struct coda_iram_info *iram, size_t size)
 	return ret;
 }
 
+/*
+ * SG2002: the Coda980's secondary AXI port reaches the codec SRAM, which the
+ * core addresses from 0, below the part its firmware uses. The buffers are
+ * laid out from the top down, as Sophgo's driver does for the H.264
+ * encoder, with its sizes per macroblock column: BIT 16 bytes, intra
+ * prediction 64, each deblocking line buffer 64. 24960 bytes at 1080p.
+ * Without them the core keeps these line buffers in DRAM and reads and
+ * writes them for every macroblock row.
+ */
+static void coda980_setup_sram_axi(struct coda_ctx *ctx)
+{
+	struct coda_iram_info *iram_info = &ctx->iram_info;
+	struct coda_q_data *q_data_src;
+	u32 top = ctx->dev->devtype->sram_axi_size;
+	u32 mask = coda980_sram_axi & 0xf;
+	u32 mb_width, offset = 0;
+
+	q_data_src = get_q_data(ctx, V4L2_BUF_TYPE_VIDEO_OUTPUT);
+	mb_width = DIV_ROUND_UP(q_data_src->rect.width, 16);
+	if (mb_width * (16 + 64 + 64 + 64) > top) {
+		coda_dbg(1, ctx, "codec SRAM too small for secondary AXI\n");
+		return;
+	}
+	if (mask & BIT(0)) {
+		offset += mb_width * 16;
+		iram_info->buf_bit_use = top - offset;
+		iram_info->axi_sram_use |= CODA9_USE_HOST_BIT_ENABLE |
+					   CODA7_USE_BIT_ENABLE;
+	}
+	if (mask & BIT(1)) {
+		offset += mb_width * 64;
+		iram_info->buf_ip_ac_dc_use = top - offset;
+		iram_info->axi_sram_use |= CODA9_USE_HOST_IP_ENABLE |
+					   CODA7_USE_IP_ENABLE;
+	}
+	if (mask & BIT(3)) {
+		offset += mb_width * 64;
+		iram_info->buf_dbk_c_use = top - offset;
+		iram_info->axi_sram_use |= BIT(11) | BIT(3);
+	}
+	if (mask & BIT(2)) {
+		offset += mb_width * 64;
+		iram_info->buf_dbk_y_use = top - offset;
+		iram_info->axi_sram_use |= BIT(10) | BIT(2);
+	}
+	coda_dbg(1, ctx, "secondary AXI in codec SRAM: %#x, %u bytes\n",
+		 iram_info->axi_sram_use, offset);
+}
+
 static void coda_setup_iram(struct coda_ctx *ctx)
 {
 	struct coda_iram_info *iram_info = &ctx->iram_info;
@@ -950,6 +1010,11 @@ static void coda_setup_iram(struct coda_ctx *ctx)
 	iram_info->next_paddr = dev->iram.paddr;
 	iram_info->remaining = dev->iram.size;
 
+	if (dev->devtype->sram_axi_size) {
+		if (ctx->inst_type == CODA_INST_ENCODER)
+			coda980_setup_sram_axi(ctx);
+		return;
+	}
 	if (!dev->iram.vaddr)
 		return;
 
