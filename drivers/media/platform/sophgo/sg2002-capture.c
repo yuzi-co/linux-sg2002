@@ -47,7 +47,18 @@
 #define SG2002_HEIGHT		1080
 #define SG2002_BYTES_PER_LINE	ALIGN(SG2002_WIDTH * 2, 16)
 #define SG2002_SIZE_IMAGE	(SG2002_BYTES_PER_LINE * SG2002_HEIGHT)
-#define SG2002_CAPTURE_MAX_BUFFERS	2
+#define SG2002_CAPTURE_MAX_BUFFERS	4
+
+/*
+ * With two buffers a reader that takes one picture in two loses the newest
+ * frame half the time: while it holds one buffer for the scaler and the
+ * other has completed, the frame in flight has nowhere to go, and the next
+ * read gets a picture up to two frame times old. A third buffer keeps one
+ * queued at every frame end.
+ */
+static unsigned int max_buffers = 3;
+module_param(max_buffers, uint, 0444);
+MODULE_PARM_DESC(max_buffers, "capture buffers a queue may allocate (2 to 4, default 3)");
 
 /* CSI MAC0 register blocks. */
 #define MAC_TOP_CTRL		0x000
@@ -236,8 +247,6 @@ struct sg2002_capture {
 	bool removing;
 	struct work_struct error_work;
 
-	void *scratch;
-	dma_addr_t scratch_dma;
 
 	struct v4l2_mbus_config_mipi_csi2 bus;
 
@@ -825,10 +834,6 @@ static void sg2002_stop_capture(struct sg2002_capture *cap,
 	}
 
 	sg2002_return_buffers(cap, state);
-	if (cap->scratch)
-		dma_free_coherent(cap->dev, cap->sizeimage, cap->scratch,
-				  cap->scratch_dma);
-	cap->scratch = NULL;
 	if (cap->clocks_enabled) {
 		sg2002_ddr_restore_clock_gating(cap);
 		clk_bulk_disable_unprepare(cap->num_clks, cap->clks);
@@ -914,16 +919,24 @@ static irqreturn_t sg2002_irq(int irq, void *data)
 		/* Keep the damaged buffer private and overwrite it with the next
 		 * frame.  Userspace must never observe packet-corrupt payload. */
 		cap->frame_error = false;
-		sg2002_dma_set_addr(cap, cap->active ? cap->active->dma_addr :
-				    cap->scratch_dma);
+		if (cap->active)
+			sg2002_dma_set_addr(cap, cap->active->dma_addr);
 		sg2002_preraw_fe0_trigger(cap);
 		spin_unlock_irqrestore(&cap->qlock, flags);
 		return IRQ_HANDLED;
 	}
 	done = cap->active;
 	next = sg2002_next_buffer(cap);
+	if (!next) {
+		/* Nothing queued: the next frame overwrites this one, which
+		 * stays with the driver. No scratch frame, and its 4 MB of
+		 * the media pool, is needed for it. */
+		next = done;
+		done = NULL;
+	}
 	cap->active = next;
-	sg2002_dma_set_addr(cap, next ? next->dma_addr : cap->scratch_dma);
+	if (next)
+		sg2002_dma_set_addr(cap, next->dma_addr);
 	sg2002_preraw_fe0_trigger(cap);
 	if (done) {
 		done->vb.sequence = cap->sequence++;
@@ -984,12 +997,13 @@ static int sg2002_queue_setup(struct vb2_queue *q, unsigned int *num_buffers,
 {
 	struct sg2002_capture *cap = vb2_get_drv_priv(q);
 	unsigned int allocated = vb2_get_num_buffers(q);
+	unsigned int max = clamp(max_buffers, 2U, SG2002_CAPTURE_MAX_BUFFERS);
 
-	/* The private media pool budgets two frame buffers plus scratch. */
-	if (allocated >= SG2002_CAPTURE_MAX_BUFFERS)
+	/* The frames come from the private media pool. Three take what two
+	 * and the scratch frame took before. */
+	if (allocated >= max)
 		return -ENOBUFS;
-	*num_buffers = min(*num_buffers,
-			   SG2002_CAPTURE_MAX_BUFFERS - allocated);
+	*num_buffers = min(*num_buffers, max - allocated);
 
 	if (*num_planes)
 		return sizes[0] < cap->sizeimage ? -EINVAL : 0;
@@ -1078,13 +1092,6 @@ static int sg2002_start_streaming(struct vb2_queue *q, unsigned int count)
 	if (ret)
 		goto err_stop;
 	sg2002_vip_init(cap);
-
-	cap->scratch = dma_alloc_coherent(cap->dev, cap->sizeimage,
-					  &cap->scratch_dma, GFP_KERNEL);
-	if (!cap->scratch) {
-		ret = -ENOMEM;
-		goto err_stop;
-	}
 
 	spin_lock_irqsave(&cap->qlock, flags);
 	first = sg2002_next_buffer(cap);
