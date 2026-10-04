@@ -2038,6 +2038,7 @@ int coda_alloc_aux_buf(struct coda_dev *dev, struct coda_aux_buf *buf,
 	}
 
 	buf->size = size;
+	buf->attrs = 0;
 
 	if (name && parent) {
 		buf->blob.data = buf->vaddr;
@@ -2049,11 +2050,33 @@ int coda_alloc_aux_buf(struct coda_dev *dev, struct coda_aux_buf *buf,
 	return 0;
 }
 
+/*
+ * A buffer only the VPU reads and writes: no kernel mapping, so neither
+ * cleared nor remapped, and no debugfs blob, which would need the mapping.
+ */
+int coda_alloc_aux_buf_nomap(struct coda_dev *dev, struct coda_aux_buf *buf,
+			     size_t size, const char *name)
+{
+	buf->vaddr = dma_alloc_attrs(dev->dev, size, &buf->paddr, GFP_KERNEL,
+				     DMA_ATTR_NO_KERNEL_MAPPING);
+	if (!buf->vaddr) {
+		v4l2_err(&dev->v4l2_dev,
+			 "Failed to allocate %s buffer of size %zu\n",
+			 name, size);
+		return -ENOMEM;
+	}
+
+	buf->size = size;
+	buf->attrs = DMA_ATTR_NO_KERNEL_MAPPING;
+	return 0;
+}
+
 void coda_free_aux_buf(struct coda_dev *dev,
 		       struct coda_aux_buf *buf)
 {
 	if (buf->vaddr) {
-		dma_free_coherent(dev->dev, buf->size, buf->vaddr, buf->paddr);
+		dma_free_attrs(dev->dev, buf->size, buf->vaddr, buf->paddr,
+			       buf->attrs);
 		buf->vaddr = NULL;
 		buf->size = 0;
 		debugfs_remove(buf->dentry);
