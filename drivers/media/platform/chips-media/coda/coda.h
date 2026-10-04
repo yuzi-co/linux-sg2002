@@ -93,6 +93,12 @@ struct coda_devtype {
 	bool			skip_code_download;
 	/* Coda980's H.264 encoder extends the Coda9 command ABI. */
 	bool			has_coda980_h264_abi;
+	/*
+	 * Size of the codec-internal SRAM the encoder may use for its
+	 * secondary AXI buffers, addressed by the core from 0; for a core
+	 * with no CPU-visible IRAM pool.
+	 */
+	u32			sram_axi_size;
 };
 
 struct coda_aux_buf {
