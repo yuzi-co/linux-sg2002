@@ -105,6 +105,7 @@ struct coda_aux_buf {
 	void			*vaddr;
 	dma_addr_t		paddr;
 	u32			size;
+	unsigned long		attrs;	/* DMA_ATTR_NO_KERNEL_MAPPING: vaddr is a cookie */
 	struct debugfs_blob_wrapper blob;
 	struct dentry		*dentry;
 };
@@ -355,6 +356,8 @@ void coda_write_base(struct coda_ctx *ctx, struct coda_q_data *q_data,
 
 int coda_alloc_aux_buf(struct coda_dev *dev, struct coda_aux_buf *buf,
 		       size_t size, const char *name, struct dentry *parent);
+int coda_alloc_aux_buf_nomap(struct coda_dev *dev, struct coda_aux_buf *buf,
+			     size_t size, const char *name);
 void coda_free_aux_buf(struct coda_dev *dev, struct coda_aux_buf *buf);
 
 int coda_encoder_queue_init(void *priv, struct vb2_queue *src_vq,
