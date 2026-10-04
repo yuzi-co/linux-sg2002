@@ -1244,14 +1244,27 @@ static void coda9_set_frame_cache(struct coda_ctx *ctx, u32 fourcc)
 	coda_write(ctx->dev, cache_config, CODA9_CMD_SET_FRAME_CACHE_CONFIG);
 }
 
+/*
+ * The Coda980's Maverick-II frame cache, in front of the reference frame
+ * reads: bits 1:0 bypass, 2 tiled map, 3 burst, 8:5 way shape, 10:9 merge.
+ * Sophgo's cv18xx vcodec configures it for the H.264 encoder with what its
+ * sample calls the best values, cache on, no burst, merge 3, way shape 15:
+ * 0x7e0 for a linear map. 0 is the value the driver wrote before. Read at
+ * every stream start.
+ */
+static int coda980_frame_cache = 0x7e0;
+module_param(coda980_frame_cache, int, 0644);
+MODULE_PARM_DESC(coda980_frame_cache,
+		 "Coda980 H.264: Maverick-II frame cache configuration (0x7e0)");
+
 static void coda980_set_frame_cache(struct coda_ctx *ctx)
 {
 	/*
 	 * Coda980 has Maverick-II cache configuration at this register, unlike
-	 * Coda960's two-register Maverick-I configuration.  The factory driver
-	 * initializes it to zero for the linear encoder path.
+	 * Coda960's two-register Maverick-I configuration.
 	 */
-	coda_write(ctx->dev, 0, CODA9_CMD_SET_FRAME_CACHE_CONFIG);
+	coda_write(ctx->dev, coda980_frame_cache & 0x7ef,
+		   CODA9_CMD_SET_FRAME_CACHE_CONFIG);
 }
 
 /*
