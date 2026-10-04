@@ -3468,6 +3468,8 @@ static const struct coda_devtype sg2002_coda980_devdata = {
 	.num_clocks		= 5,
 	.sram_ctrl_offset	= 0x24,
 	.sram_ctrl_value	= 1,
+	/* Sophgo's cv181x vcodec gives the Coda980 0xe400 bytes of it. */
+	.sram_axi_size		= 0xe400,
 	.uses_bulk_clocks	= true,
 	.requires_firmware_name	= true,
 	.nv21_to_nv12		= true,
