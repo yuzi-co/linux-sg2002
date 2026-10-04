@@ -603,8 +603,20 @@ static int coda_alloc_framebuffers(struct coda_ctx *ctx,
 			coda_free_framebuffers(ctx);
 			return -ENOMEM;
 		}
-		ret = coda_alloc_context_buf(ctx, &ctx->internal_frames[i].buf,
-					     size, name);
+		/*
+		 * The encoder's reference frames are written by the VPU
+		 * before it reads them and never touched by the CPU: clearing
+		 * and mapping their megabytes at every stream start only
+		 * delays the first picture.
+		 */
+		if (ctx->inst_type == CODA_INST_ENCODER)
+			ret = coda_alloc_aux_buf_nomap(ctx->dev,
+						       &ctx->internal_frames[i].buf,
+						       size, name);
+		else
+			ret = coda_alloc_context_buf(ctx,
+						     &ctx->internal_frames[i].buf,
+						     size, name);
 		kfree(name);
 		if (ret < 0) {
 			coda_free_framebuffers(ctx);
