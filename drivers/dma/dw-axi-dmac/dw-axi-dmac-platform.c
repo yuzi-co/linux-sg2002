@@ -850,11 +850,11 @@ dw_axi_dma_chan_prep_slave_sg(struct dma_chan *dchan, struct scatterlist *sgl,
 	struct axi_dma_chan *chan = dchan_to_axi_dma_chan(dchan);
 	struct axi_dma_hw_desc *hw_desc = NULL;
 	struct axi_dma_desc *desc = NULL;
-	u32 num_segments, segment_len;
 	unsigned int loop = 0;
 	struct scatterlist *sg;
 	size_t axi_block_len;
 	u32 len, num_sgs;
+	u32 segment_len;
 	unsigned int i;
 	dma_addr_t mem;
 	int status;
@@ -883,10 +883,14 @@ dw_axi_dma_chan_prep_slave_sg(struct dma_chan *dchan, struct scatterlist *sgl,
 	for_each_sg(sgl, sg, sg_len, i) {
 		mem = sg_dma_address(sg);
 		len = sg_dma_len(sg);
-		num_segments = DIV_ROUND_UP(sg_dma_len(sg), axi_block_len);
-		segment_len = DIV_ROUND_UP(sg_dma_len(sg), num_segments);
 
+		/*
+		 * Whole blocks, then the remainder. An even split rounds the
+		 * segment length up, which leaves a tail shorter than a
+		 * segment unqueued and can start a segment off a word boundary.
+		 */
 		do {
+			segment_len = min_t(u32, len, axi_block_len);
 			hw_desc = &desc->hw_desc[loop++];
 			status = dw_axi_dma_set_hw_desc(chan, hw_desc, mem, segment_len);
 			if (status < 0)
@@ -895,7 +899,7 @@ dw_axi_dma_chan_prep_slave_sg(struct dma_chan *dchan, struct scatterlist *sgl,
 			desc->length += hw_desc->len;
 			len -= segment_len;
 			mem += segment_len;
-		} while (len >= segment_len);
+		} while (len);
 	}
 
 	/* Set end-of-link to the last link descriptor of list */
