@@ -91,6 +91,11 @@ struct coda_devtype {
 	bool			has_software_reset;
 	bool			rstc_assert_deassert;
 	bool			skip_code_download;
+	/*
+	 * Clocks on only while a context streams, not from open to release:
+	 * a context that is open but streamed off leaves the core gated.
+	 */
+	bool			clocks_while_streaming;
 	/* Coda980's H.264 encoder extends the Coda9 command ABI. */
 	bool			has_coda980_h264_abi;
 	/*
@@ -277,6 +282,7 @@ struct coda_ctx {
 	int				streamon_out;
 	int				streamon_cap;
 	bool				sram_held;
+	bool				clocks_held;
 	u32				qsequence;
 	u32				osequence;
 	u32				sequence_offset;
