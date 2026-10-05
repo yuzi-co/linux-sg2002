@@ -855,6 +855,28 @@ static void dwc2_gadget_fill_nonisoc_xfer_ddma_one(struct dwc2_hsotg_ep *hs_ep,
 }
 
 /*
+ * dwc2_gadget_desc_visible - make descriptors the CPU has just written
+ * visible to the core before it is told to fetch them.
+ * @desc: The descriptor written last.
+ *
+ * The core fetches the first descriptor of a chain as soon as the endpoint is
+ * enabled. writel() orders the CPU's earlier stores before that MMIO write,
+ * but on the SG2002's C906 the stores to coherent (non-cacheable) memory can
+ * still be on their way to DRAM when the core reads it, more so while the
+ * video pipeline loads the DRAM: the core then finds a descriptor that is not
+ * host ready and raises BNA, about 15 us after the enable. Reading the last
+ * descriptor back between two full fences waits for the stores to land.
+ * Under a host's TEST UNIT READY flood with a 1080p60 stream running, 6200
+ * BNAs a minute without it and none with it.
+ */
+static void dwc2_gadget_desc_visible(struct dwc2_dma_desc *desc)
+{
+	mb();
+	(void)READ_ONCE(desc->status);
+	mb();
+}
+
+/*
  * dwc2_gadget_config_nonisoc_xfer_ddma - prepare non ISOC DMA desc chain.
  * @hs_ep: The endpoint
  * @ureq: Request to transfer
@@ -881,6 +903,7 @@ static void dwc2_gadget_config_nonisoc_xfer_ddma(struct dwc2_hsotg_ep *hs_ep,
 	if (!ureq || !ureq->num_sgs) {
 		dwc2_gadget_fill_nonisoc_xfer_ddma_one(hs_ep, &desc,
 			dma_buff, len, true);
+		dwc2_gadget_desc_visible(desc - 1);
 		return;
 	}
 
@@ -893,6 +916,7 @@ static void dwc2_gadget_config_nonisoc_xfer_ddma(struct dwc2_hsotg_ep *hs_ep,
 	}
 
 	hs_ep->desc_count = desc_count;
+	dwc2_gadget_desc_visible(desc - 1);
 }
 
 /*
@@ -1020,6 +1044,9 @@ static void dwc2_gadget_start_isoc_ddma(struct dwc2_hsotg_ep *hs_ep)
 	hs_ep->compl_desc = 0;
 	depctl = hs_ep->dir_in ? DIEPCTL(index) : DOEPCTL(index);
 	dma_reg = hs_ep->dir_in ? DIEPDMA(index) : DOEPDMA(index);
+
+	if (hs_ep->next_desc)
+		dwc2_gadget_desc_visible(&hs_ep->desc_list[hs_ep->next_desc - 1]);
 
 	/* write descriptor chain address to control register */
 	dwc2_writel(hsotg, hs_ep->desc_list_dma, dma_reg);
