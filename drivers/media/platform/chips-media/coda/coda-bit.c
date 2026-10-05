@@ -122,16 +122,24 @@ MODULE_PARM_DESC(coda980_sram_axi,
  * the VPSS: the ME then reads reference rows from DRAM as it goes. 1
  * (-32..31) takes 12.3 ms beside the VPSS. The horizontal range costs
  * nothing measurable, so it stays at the widest.
+ *
+ * Motion outside the vertical range is not coded as intra blocks: on
+ * scrolling text the picture falls to about 20 dB luma PSNR and the stream
+ * runs to three times its bitrate (trial 35). Scrolling at 16 lines a
+ * picture is already outside -16..15. So by default (-1) the vertical range
+ * follows the frame rate set at stream start, as wide as the picture time
+ * allows: -48..47 up to 30 fps, -32..31 up to 60, -16..15 above. Each covers
+ * at least 940 lines a second of scrolling.
  */
 static int coda980_me_range_x;
 module_param(coda980_me_range_x, int, 0644);
 MODULE_PARM_DESC(coda980_me_range_x,
 		 "Coda980 H.264: ME horizontal search range, 0 (+-64, default) to 3 (+-16)");
 
-static int coda980_me_range_y = 2;
+static int coda980_me_range_y = -1;
 module_param(coda980_me_range_y, int, 0644);
 MODULE_PARM_DESC(coda980_me_range_y,
-		 "Coda980 H.264: ME vertical search range, 0 (+-48) to 2 (+-16, default)");
+		 "Coda980 H.264: ME vertical search range, 0 (+-48) to 2 (+-16), -1 by frame rate (default: 0 up to 30 fps, 1 up to 60, 2 above)");
 
 static int coda980_me_blk_mode;
 module_param(coda980_me_blk_mode, int, 0644);
@@ -148,12 +156,30 @@ static u32 coda980_me_line_buffer_mode(void)
 	return clamp(coda980_me_linebuf, 0, 2);
 }
 
-static u32 coda980_me_option(void)
+static u32 coda980_me_range_y_for(struct coda_ctx *ctx)
 {
+	u32 den = ctx->params.framerate & CODA_FRATE_RES_MASK;
+	u32 num = (ctx->params.framerate >> CODA_FRATE_DIV_OFFSET) + 1;
+
+	if (coda980_me_range_y >= 0)
+		return min(coda980_me_range_y, 2);
+	if (den <= 30 * num)
+		return 0;
+	if (den <= 60 * num)
+		return 1;
+	return 2;
+}
+
+static u32 coda980_me_option(struct coda_ctx *ctx)
+{
+	u32 range_y = coda980_me_range_y_for(ctx);
+
+	coda_dbg(1, ctx, "ME vertical range %u, frame rate 0x%08x\n", range_y,
+		 ctx->params.framerate);
 	return coda980_me_line_buffer_mode() << CODA980_ME_LINE_BUFFER_MODE_SHIFT |
 	       (clamp(coda980_me_blk_mode, 0, 15) << 5) |
 	       (coda980_me_zero_pmv ? BIT(4) : 0) |
-	       (clamp(coda980_me_range_y, 0, 2) << 2) |
+	       (range_y << 2) |
 	       clamp(coda980_me_range_x, 0, 3);
 }
 
@@ -1729,7 +1755,7 @@ static int coda_start_encoding(struct coda_ctx *ctx)
 		case CODA_960:
 			if (dev->devtype->has_coda980_h264_abi)
 				coda_write(dev, coda980_h264 ?
-					   coda980_me_option() :
+					   coda980_me_option(ctx) :
 					   coda980_me_line_buffer_mode() <<
 					   CODA980_ME_LINE_BUFFER_MODE_SHIFT,
 					   CODA9_CMD_ENC_SEQ_ME_OPTION);
