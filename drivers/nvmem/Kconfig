@@ -408,10 +408,12 @@ config NVMEM_SG2002_EFUSE
 	tristate "Sophgo SG2002 public eFuse shadow support"
 	depends on ARCH_SOPHGO || COMPILE_TEST
 	depends on HAS_IOMEM
+	select CRYPTO_LIB_SHA512
 	help
 	  Read the factory UID, public user words and device ID from the
-	  SG2002 eFuse shadow registers. Other fields are hidden. Fuse
-	  programming is not supported. The module is called sg2002-efuse.
+	  SG2002 eFuse shadow registers, and derive Sipeed's Ethernet MAC
+	  address from the UID. Other fields are hidden. Fuse programming
+	  is not supported. The module is called sg2002-efuse.
 
 config NVMEM_SUNPLUS_OCOTP
 	tristate "Sunplus SoC OTP support"
