@@ -1,0 +1,427 @@
+/* NanoKVM-PCIe carrier overlay (mainline).
+ *
+ * The SG2002 has an on-die GMAC (snps,dwmac-3.70a) at 0x4070000 with an
+ * internal 10/100 EPHY reached through the mmioreg mdio-mux. The
+ * upstream cv180x.dtsi defines both but leaves them `status =
+ * "disabled"` (the LicheeRV-Nano dev board has no ethernet). The
+ * NanoKVM-PCIe carrier wires the GMAC to the RJ45, so enable them.
+ *
+ * Layered on top of sg2002-licheerv-nano-bw.dtsi, which already keeps
+ * SDIO1 (AIC8800 WiFi) enabled — so this DTB carries both ethernet,
+ * WiFi and the front-panel OLED for the PCIe board.
+ */
+
+/*
+ * The standalone DTB builder uses an unpatched Linux source tarball. Keep
+ * these fallbacks until its cv18xx-reset.h contains the named CSI PHY IDs.
+ */
+#ifndef RST_CSI_PHY0
+#define RST_CSI_PHY0 70
+#endif
+#ifndef RST_CSI_PHY0_APB
+#define RST_CSI_PHY0_APB 71
+#endif
+
+&mdio {
+	status = "okay";
+};
+
+/*
+ * The standalone DTB builder intentionally starts from the pristine Linux
+ * source tarball, whereas the kernel applies the local SG2002 patch queue.
+ * Keep the enabled bring-up instance here for the PCIe carrier; the matching
+ * upstream-shaped SoC description in the kernel source remains disabled.
+ */
+/*
+ * Deterministic DMA carveout for the 1080p capture+encode pipeline.
+ * Measured simultaneous worst case (live-1080p CSI capture + Coda980
+ * encode, two reconstruction buffers) is ~38 MiB:
+ *   CSI:      2 x 4.15 MiB frames + 4.15 MiB scratch
+ *   Coda980:  3.13 MiB NV21 staging, 3.2 MiB slice buffer,
+ *             2 x 3.13 MiB reconstruction, bitstream + firmware arena
+ * The pool is deliberately NOT `reusable`: a reusable region registers as
+ * CMA, which the page allocator fills with movable pages — on this
+ * 256 MiB board the 48 MiB default CMA is fully colonized minutes after
+ * boot and 4 MiB coherent allocations then fail with EBUSY. `no-map`
+ * keeps the pages out of the allocator entirely. CPU access still works:
+ * the coherent-pool mapping is established with memremap(MEMREMAP_WC),
+ * which the Coda driver needs for its staging and bitstream buffers.
+ * Placement sits just below the default-CMA window previous configs
+ * reserved at 0x89800000.
+ */
+/ {
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		video_pool: video-pool@86800000 {
+			/* 32 MiB: 540p pipeline with the deeper pipelining queues is
+			 * ~24.6 MiB simultaneous worst case (CSI 3x4.15 + 4.15
+			 * scratch, coda internals + 4x0.78 out + 3x1M cap).
+			 * 1080p needs ~38+ MiB and still waits on the initrd
+			 * memory work. */
+			compatible = "shared-dma-pool";
+			no-map;
+			reg = <0x86800000 0x2000000>; /* 32 MiB */
+		};
+	};
+};
+
+&{/soc} {
+	video-codec@b030000 {
+		compatible = "sophgo,sg2002-coda980";
+		reg = <0x0b030000 0x100>, <0x0b010000 0x10000>;
+		reg-names = "vc-ctrl", "h264";
+		interrupts = <SOC_PERIPHERAL_IRQ(5) IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "h264";
+		clocks = <&clk CLK_AXI_VIDEO_CODEC>,
+			 <&clk CLK_CFG_REG_VC>,
+			 <&clk CLK_VC_SRC0>,
+			 <&clk CLK_H264C>,
+			 <&clk CLK_APB_H264C>;
+		clock-names = "axi-video-codec", "cfg-reg-vc", "vc-src0",
+			      "h264c", "apb-h264c";
+		resets = <&rst RST_H264C>;
+		firmware-name = "sophgo/sg2002/coda980.bin";
+		memory-region = <&video_pool>;
+		status = "okay";
+	};
+};
+
+/* SD card slot on sdhci0 (mmc@4310000). Upstream cv180x.dtsi leaves it
+ * disabled and the base bw.dtsi only wires sdhci1 (SDIO/WiFi), so Linux
+ * never saw the card — blocking both booting from SD and writing it.
+ * Pins/props cribbed from upstream sg2002-licheerv-nano-b.dts. */
+&pinctrl {
+	sdhci0_cfg: sdhci0-cfg {
+		sdhci0-clk-pins {
+			pinmux = <PINMUX(PIN_SD0_CLK, 0)>;
+			/*
+			 * The reset/default pad state already has the clock
+			 * pull-down enabled. Requesting pull-up here leaves both
+			 * pulls active because the cv18xx pinctrl driver only
+			 * updates the named bias bit. Keep the clock pulled down
+			 * like the vendor SDIO pad init does; CMD/DAT/CD stay
+			 * pulled up below.
+			 */
+			/delete-property/ bias-pull-up;
+			bias-pull-down;
+			drive-strength-microamp = <16100>;
+			power-source = <3300>;
+		};
+		sdhci0-cmd-pins {
+			pinmux = <PINMUX(PIN_SD0_CMD, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+		sdhci0-data-pins {
+			pinmux = <PINMUX(PIN_SD0_D0, 0)>,
+				 <PINMUX(PIN_SD0_D1, 0)>,
+				 <PINMUX(PIN_SD0_D2, 0)>,
+				 <PINMUX(PIN_SD0_D3, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+		sdhci0-cd-pins {
+			pinmux = <PINMUX(PIN_SD0_CD, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+		sdhci0-pwr-en-pins {
+			pinmux = <PINMUX(PIN_SD0_PWR_EN, 0)>;
+			bias-pull-down;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+	};
+
+	/* Front-panel OLED pads. Vendor firmware muxes these to GPIO via
+	 * devmem (fmux 0x3c/0x58/0x50 = 3); the mainline cv18xx pinctrl
+	 * driver has no gpio_request_enable hook, so the dwapb gpio
+	 * controller can't mux them on request — an explicit group is
+	 * required. Pad → GPIO mapping (fn 3, per pinctrl-sg2002.c):
+	 *   SPK_EN    → XGPIOA[15] = I2C SCL
+	 *   EMMC_DAT3 → XGPIOA[27] = I2C SDA
+	 *   EMMC_CLK  → XGPIOA[22] = panel reset (active-low)
+	 * All three sit in the VDDIO_SD0_EMMC domain like the SD0 pads
+	 * above, hence the same 3300 mV power-source. */
+	oled_i2c_cfg: oled-i2c-cfg {
+		oled-i2c-pins {
+			pinmux = <PINMUX(PIN_SPK_EN, 3)>,
+				 <PINMUX(PIN_EMMC_DAT3, 3)>;
+			/* Bit-banged open-drain I2C: the on-die pulls are
+			 * weak but harmless alongside the carrier's
+			 * external pull-ups. */
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+		oled-reset-pins {
+			pinmux = <PINMUX(PIN_EMMC_CLK, 3)>;
+			/* Reset is active-low; pull up so the panel stays
+			 * out of reset until ssd1307fb claims the line. */
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+	};
+
+	/* HDMI bridge control bus. The Lontium LT6911-family bridge is
+	 * configured over the SoC's I2C4 controller. Use the PWR-domain
+	 * I2C4 pad pair here; the alternate MIPIRX2 I2C4 mux would steal
+	 * pins from the CSI lane bundle we need for actual capture. */
+	i2c4_cfg: i2c4-cfg {
+		i2c4-pins {
+			pinmux = <PINMUX(PIN_PWR_WAKEUP0, 5)>,
+				 <PINMUX(PIN_PWR_BUTTON1, 5)>;
+			bias-pull-up;
+			drive-strength-microamp = <37400>;
+			power-source = <1800>;
+		};
+	};
+
+	/* Vendor sysfs GPIO 451 is PWR GPIO 3, i.e. the PWR_SEQ1 pad
+	 * muxed to GPIO mode. This line holds the LT6911 bridge out of
+	 * reset. */
+	hdmi_reset_cfg: hdmi-reset-cfg {
+		hdmi-reset-pins {
+			pinmux = <PINMUX(PIN_PWR_SEQ1, 3)>;
+			bias-pull-up;
+			drive-strength-microamp = <37400>;
+			power-source = <1800>;
+		};
+	};
+
+	/* The PCIe carrier's 6-pin UART header labels GPIOA19/A18 as
+	 * UART1_TX/UART1_RX.  These are the alternate UART1 data pins; the
+	 * upstream board DT only muxes UART0, and the vendor firmware leaves
+	 * these two pads as UART1 RTS/CTS for the optional Bluetooth device. */
+	uart1_pcie_cfg: uart1-pcie-cfg {
+		uart1-pcie-pins {
+			/* GPIOA19 = PIN_JTAG_CPU_TMS, GPIOA18 = PIN_JTAG_CPU_TCK. */
+			pinmux = <PINMUX(PIN_JTAG_CPU_TMS, 6)>,
+				 <PINMUX(PIN_JTAG_CPU_TCK, 6)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+	};
+};
+
+/* Keep ttyS0 as the existing system console; ttyS1 is an additional
+ * diagnostic UART for the carrier header.  U-Boot/OpenSBI remain on
+ * serial0 for now, so this deliberately does not add an earlycon. */
+&uart1 {
+	pinctrl-0 = <&uart1_pcie_cfg>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+/* Front-panel SSD1306 128x64 OLED at 0x3c on a bit-banged I2C bus
+ * (the panel isn't wired to any hardware I2C controller — vendor
+ * firmware bit-bangs the same two GPIOs from userspace). The carrier
+ * may ship with the footprint unpopulated; ssd1307fb is a module and a
+ * probe failure on a missing panel is harmless.
+ *
+ * Panel init mapped from the vendor sequence to ssd1307fb defaults for
+ * "solomon,ssd1306fb-i2c" (drivers/video/fbdev/ssd1307fb.c):
+ *   0xA8/0x3F mux 1/64        → solomon,height = <64> (driver: height-1)
+ *   0xDA/0x12 COM pins alt    → driver default (no com-seq/com-lrremap)
+ *   0xA1 segment remap ON     → driver default (no segment-no-remap)
+ *   0xC8 COM scan inverted    → solomon,com-invdir
+ *   0xD9/0xF1 precharge       → solomon,prechargep1/2 = <1>/<15>
+ *   0xD3/0x00 display offset  → driver default (com-offset 0)
+ *   0x8D/0x14 charge pump ON  → automatic (ssd1306 need_chargepump)
+ *   0x81/0xCF + 0xDB/0x40 (contrast/vcomh) have no DT properties; the
+ *   driver's 127/0x20 are visibly fine and contrast is adjustable at
+ *   runtime through the backlight class device.
+ * page-offset must be 0 — the driver's legacy default is 1, which
+ * would wrap the top 8 pixel rows off the panel. */
+/ {
+	ddr_top: syscon@800a000 {
+		compatible = "sophgo,sg2002-ddr-top", "syscon";
+		reg = <0x0800a000 0x1000>;
+	};
+
+	oled_i2c: i2c-oled {
+		compatible = "i2c-gpio";
+		pinctrl-0 = <&oled_i2c_cfg>;
+		pinctrl-names = "default";
+		scl-gpios = <&porta 15 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		sda-gpios = <&porta 27 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		/* Vendor userspace bit-bang timing; ~100 kHz equivalent. */
+		i2c-gpio,delay-us = <5>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		oled@3c {
+			compatible = "solomon,ssd1306fb-i2c";
+			reg = <0x3c>;
+			reset-gpios = <&porta 22 GPIO_ACTIVE_LOW>;
+			solomon,width = <128>;
+			solomon,height = <64>;
+			solomon,page-offset = <0>;
+			solomon,col-offset = <0>;
+			solomon,com-invdir;
+			solomon,prechargep1 = <1>;
+			solomon,prechargep2 = <15>;
+		};
+	};
+};
+
+/* DMA engines must inherit /soc's dma-noncoherent property. */
+&{/soc} {
+	/* The VIP scaler/CSC block ("VPSS") at 0x0a080000, driven as a
+	 * mem2mem device (IMG_IN_V + SC_V1) by the sophgo,sg2002-vpss
+	 * driver.  Vendor DTS numbers the shared interrupt PLIC source 25,
+	 * i.e. SOC_PERIPHERAL_IRQ(9) after the 16 core-local IDs.
+	 * Deliberately NOT bound to video_pool: rmem_dma_ops cannot map
+	 * imported dma-bufs, and this node is import-only in the
+	 * capture -> VPSS -> encoder zero-copy chain. */
+	vpss: vpss@a080000 {
+		compatible = "sophgo,sg2002-vpss";
+		reg = <0x0a080000 0x10000>;
+		interrupt-parent = <&plic>;
+		interrupts = <SOC_PERIPHERAL_IRQ(9) IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&clk CLK_SRC_VIP_SYS_0>,
+			 <&clk CLK_SRC_VIP_SYS_1>,
+			 <&clk CLK_SRC_VIP_SYS_2>,
+			 <&clk CLK_IMG_V_VIP>,
+			 <&clk CLK_SC_TOP_VIP>,
+			 <&clk CLK_SC_V1_VIP>,
+			 /* The register window hangs off the VIP fabric;
+			  * csi_capture owns these and gates them at stream
+			  * stop — without them a VPSS write stalls the bus. */
+			 <&clk CLK_AXI_VIP>,
+			 <&clk CLK_CFG_REG_VIP>;
+		clock-names = "sys0", "sys1", "sys2", "img_v", "sc_top", "sc_v1",
+			      "axi", "cfg_reg";
+		status = "okay";
+	};
+
+	/* The factory NanoKVM route is CSI MAC0 -> CSIBDG0 -> DMA6.  Keep
+	 * this single-purpose until the wider SG2002 media pipeline has a
+	 * complete upstream binding and driver split. */
+	csi_capture: video-capture@a0c2000 {
+		compatible = "sophgo,sg2002-csi-capture";
+		reg = <0x0a0c2000 0x2000>,
+		      <0x0a0d0000 0x1000>,
+		      <0x0a000000 0x80000>,
+		      <0x0a0c8000 0x2000>;
+		reg-names = "csi-mac0", "csi-wrap", "vi", "vip-sys";
+		interrupt-parent = <&plic>;
+		/* Vendor DTS numbers these PLIC sources directly as VI=24 and
+		 * CSI0=26.  Mainline's SOC_PERIPHERAL_IRQ() accounts for the 16
+		 * core-local interrupt IDs, so its peripheral indices are 8/10. */
+		interrupts = <SOC_PERIPHERAL_IRQ(8) IRQ_TYPE_LEVEL_HIGH>,
+			     <SOC_PERIPHERAL_IRQ(10) IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "vi", "csi";
+		clocks = <&clk CLK_SRC_VIP_SYS_0>,
+			 <&clk CLK_SRC_VIP_SYS_1>,
+			 <&clk CLK_SRC_VIP_SYS_2>,
+			 <&clk CLK_SRC_VIP_SYS_3>,
+			 <&clk CLK_AXI_VIP>,
+			 <&clk CLK_CFG_REG_VIP>,
+			 <&clk CLK_VIP_IP0>,
+			 <&clk CLK_VIP_IP1>,
+			 <&clk CLK_VIP_IP2>,
+			 <&clk CLK_VIP_IP3>,
+			 <&clk CLK_CSI_BE_VIP>,
+			 <&clk CLK_RAW_VIP>,
+			 <&clk CLK_ISP_TOP_VIP>,
+			 <&clk CLK_CSI_MAC0_VIP>,
+			 <&clk CLK_CSI0_RX_VIP>;
+		clock-names = "vip-sys0", "vip-sys1", "vip-sys2", "vip-sys3",
+			      "axi", "cfg-reg", "vip-ip0", "vip-ip1", "vip-ip2",
+			      "vip-ip3", "csi-be", "raw", "isp-top",
+			      "csi-mac0", "csi0-rx";
+		resets = <&rst RST_CSI_PHY0>, <&rst RST_CSI_PHY0_APB>;
+		reset-names = "csi-phy", "csi-phy-apb";
+		sophgo,ddr-top = <&ddr_top>;
+		memory-region = <&video_pool>;
+
+		port {
+			sg2002_csi_in: endpoint {
+				remote-endpoint = <&lt6911_out>;
+				bus-type = <4>; /* CSI-2 D-PHY */
+				/* Physical carrier wiring recovered from the
+				 * factory sensor_cfg.ini.LT. */
+				clock-lanes = <2>;
+				data-lanes = <4 3 1 0>;
+			};
+		};
+	};
+};
+
+&sdhci0 {
+	pinctrl-0 = <&sdhci0_cfg>;
+	pinctrl-names = "default";
+	status = "okay";
+	resets = <&rst 16>;
+	reset-names = "sdhci";
+	bus-width = <4>;
+	min-frequency = <400000>;
+	max-frequency = <25000000>;
+	/* Vendor SD init sets MSHC_CTRL bits 8/9 for latched output paths.
+	 * Mainline only did this for SDIO1, but this carrier's SD0 slot
+	 * answers with command CRC errors without the same vendor bits. */
+	sophgo,mshc-ctrl-8-9;
+	/* Match the vendor SD0 clock source: fpll(1500 MHz) / 4 = 375 MHz. */
+	sophgo,sdio-clkgen-pll-reg = <0x03002070>;
+	sophgo,sdio-clkgen-pll-div = <0x00040109>;
+	sophgo,sdio-clkgen-bypass-reg = <0x03002030>;
+	sophgo,sdio-clkgen-bypass-bit = <6>;
+	/* Vendor sdhci-cv181x restores the SD power switch before probing SD0. */
+	sophgo,sd-pwrsw-ctrl-reg = <0x030001f4>;
+	no-1-8-v;
+	no-mmc;
+	no-sdio;
+	disable-wp;
+	/* The SD0_CD card-detect line is unreliable on this carrier (it
+	 * intermittently reports "no card" after a power-cycle, so the
+	 * kernel never probes an inserted card). Ignore CD and poll the
+	 * slot directly. */
+	broken-cd;
+};
+
+&i2c4 {
+	pinctrl-0 = <&i2c4_cfg>;
+	pinctrl-names = "default";
+	clock-frequency = <100000>;
+	status = "okay";
+
+	hdmi_bridge: hdmi-bridge@2b {
+		compatible = "lontium,lt6911", "lontium,lt6911uxe";
+		/* Vendor code names the 8-bit write address 0x56; Linux DT
+		 * uses the 7-bit I2C address. */
+		reg = <0x2b>;
+		pinctrl-0 = <&hdmi_reset_cfg>;
+		pinctrl-names = "default";
+		reset-gpios = <&portb 3 GPIO_ACTIVE_LOW>;
+
+		port {
+			lt6911_out: endpoint {
+				remote-endpoint = <&sg2002_csi_in>;
+				bus-type = <4>; /* CSI-2 D-PHY */
+				clock-lanes = <2>;
+				data-lanes = <4 3 1 0>;
+			};
+		};
+	};
+};
+
+&gmac0 {
+	/* Just enable the node; the phy-mode (rmii) and the internal-EPHY
+	 * mdio-mux come from the upstream include chain. The earlier -EINVAL
+	 * ("validation of rmii/internal ... failed") was NOT a phy-mode
+	 * problem: the internal EPHY was still shut down, so MDIO read no
+	 * abilities and the MAC/PHY speed-cap intersection came out empty.
+	 * Our dwmac-sophgo patch 0013 powers the EPHY up in probe (it then
+	 * answers MDIO with phy_id 0x00435649), after which the Generic PHY
+	 * attaches and validates against the dwmac1000 10/100 caps. */
+	status = "okay";
+};
