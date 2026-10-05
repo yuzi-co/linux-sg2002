@@ -1,0 +1,64 @@
+/* Divider-only scaling below a CPU PLL this file selects.
+ *
+ * The datasheet rates the main C906 at 1.0 GHz on a nominal 0.9 V core
+ * supply, but the vendor firmware leaves MPLL at 850 MHz. MPLL drives
+ * nothing else — the auxiliary C906L runs from DISPPLL and the A53 clock
+ * from FPLL — so it is the one PLL this board may retune, and the driver
+ * parks the CPU on the spare mux lane while it does.
+ *
+ * This is the frequency half only. Nano 70415/70418 mark the PWM
+ * voltage-control network DNP; do not describe an adjustable regulator
+ * or undervolt the shared core rail. 1.0 GHz is inside the datasheet's
+ * recommended range at the fixed supply these carriers provide; the
+ * vendor's separate 1.05 GHz overdrive mode, which also raises voltage
+ * and moves other clocks, is deliberately not used.
+ */
+#include <dt-bindings/clock/sophgo,cv1800.h>
+#include <dt-bindings/thermal/thermal.h>
+
+&{/soc/clock-controller@3002000} {
+	assigned-clocks = <&{/soc/clock-controller@3002000} CLK_MPLL>;
+	assigned-clock-rates = <1000000000>;
+};
+
+&{/cpus/cpu@0} {
+	clocks = <&{/soc/clock-controller@3002000} CLK_C906_0>;
+	operating-points-v2 = <&cpu_opp_table>;
+	#cooling-cells = <2>;
+};
+
+/ {
+	/* Integer divisions of MPLL: 1 GHz / 4, / 2 and / 1. */
+	cpu_opp_table: opp-table-cpu {
+		compatible = "operating-points-v2";
+
+		opp-250000000 {
+			opp-hz = /bits/ 64 <250000000>;
+			clock-latency-ns = <100000>;
+		};
+		opp-500000000 {
+			opp-hz = /bits/ 64 <500000000>;
+			clock-latency-ns = <100000>;
+		};
+		opp-1000000000 {
+			opp-hz = /bits/ 64 <1000000000>;
+			clock-latency-ns = <100000>;
+		};
+	};
+};
+
+&{/thermal-zones/soc-thermal} {
+	trips {
+		cpu_passive: cpu-passive {
+			temperature = <85000>;
+			hysteresis = <5000>;
+			type = "passive";
+		};
+	};
+	cooling-maps {
+		cpu-map {
+			trip = <&cpu_passive>;
+			cooling-device = <&{/cpus/cpu@0} THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+		};
+	};
+};
