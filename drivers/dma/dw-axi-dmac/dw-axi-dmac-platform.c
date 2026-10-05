@@ -1565,7 +1565,11 @@ static int dw_probe(struct platform_device *pdev)
 	dma_cap_set(DMA_CYCLIC, dw->dma.cap_mask);
 
 	/* DMA capabilities */
-	dw->dma.max_burst = hdata->axi_rw_burst_len;
+	/*
+	 * Peripheral transfers are always programmed with an MSIZE of 4; the
+	 * AXI burst length limits something else and is often left unset.
+	 */
+	dw->dma.max_burst = 4;
 	dw->dma.src_addr_widths = AXI_DMA_BUSWIDTHS;
 	dw->dma.dst_addr_widths = AXI_DMA_BUSWIDTHS;
 	dw->dma.directions = BIT(DMA_MEM_TO_MEM);
