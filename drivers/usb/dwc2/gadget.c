@@ -2274,6 +2274,81 @@ static void dwc2_gadget_handle_isoc_bna(struct dwc2_hsotg_ep *hs_ep)
 	dwc2_gadget_restart_isoc_out_ddma(hs_ep);
 }
 
+/*
+ * dwc2_gadget_wait_desc_done - wait for the core's write-back of the last
+ * descriptor of a completed IN transfer.
+ * @hs_ep: The endpoint, not EP0 and not isochronous.
+ *
+ * The completion reads the descriptor to size the transfer, and the next
+ * request on the endpoint fills the same descriptor at once. A write-back
+ * still on its way under heavy DRAM traffic would land on the new contents.
+ * Wait up to 100 us for it, and say so when it was late. (On the SG2002 it
+ * never was in a 30 minute soak; the BNA below had another cause.)
+ */
+static void dwc2_gadget_wait_desc_done(struct dwc2_hsotg_ep *hs_ep)
+{
+	struct dwc2_hsotg *hsotg = hs_ep->parent;
+	struct dwc2_dma_desc *desc;
+	u32 status = 0;
+	int i;
+
+	if (!hs_ep->desc_list || !hs_ep->desc_count)
+		return;
+
+	desc = &hs_ep->desc_list[hs_ep->desc_count - 1];
+	for (i = 0; i <= 100; i++) {
+		status = READ_ONCE(desc->status);
+		if ((status & DEV_DMA_BUFF_STS_MASK) >> DEV_DMA_BUFF_STS_SHIFT ==
+		    DEV_DMA_BUFF_STS_DMADONE)
+			break;
+		udelay(1);
+	}
+
+	if (i)
+		dev_warn_ratelimited(hsotg->dev,
+				     "%s: descriptor %08x at XferCompl, done after %d us\n",
+				     hs_ep->name, status, i);
+}
+
+/*
+ * dwc2_gadget_handle_nonisoc_bna - handle BNA interrupt for bulk and
+ * interrupt endpoints in descriptor DMA mode.
+ * @hs_ep: The endpoint, not EP0 and not isochronous.
+ * @ints: The endpoint interrupts that came with the BNA, for the log.
+ *
+ * The core raises BNA and disables the endpoint when the descriptor it
+ * fetches is not marked host ready. The chain of a bulk or interrupt
+ * endpoint is complete before the endpoint is enabled, and afterwards the
+ * descriptor reads host ready, so the core read it before the CPU's writes
+ * to it reached memory. Nothing was transferred and no XferCompl
+ * follows: the request stays current, the ones queued behind it never
+ * start, and the function waits until the host gives up and resets the
+ * port. Start the request again; that fills the descriptor anew.
+ */
+static void dwc2_gadget_handle_nonisoc_bna(struct dwc2_hsotg_ep *hs_ep,
+					   u32 ints)
+{
+	struct dwc2_hsotg *hsotg = hs_ep->parent;
+	struct dwc2_hsotg_req *hs_req = hs_ep->req;
+	u32 epctl_reg = hs_ep->dir_in ? DIEPCTL(hs_ep->index) :
+					DOEPCTL(hs_ep->index);
+	u32 epctl = dwc2_readl(hsotg, epctl_reg);
+	u32 status = hs_ep->desc_list ? READ_ONCE(hs_ep->desc_list[0].status) : 0;
+	bool restart = hs_req && !hs_ep->halted &&
+		       !(epctl & (DXEPCTL_EPENA | DXEPCTL_STALL));
+
+	dev_warn_ratelimited(hsotg->dev,
+			     "%s: BNA, DxEPINT %08x DxEPCTL %08x descriptor %08x, %s\n",
+			     hs_ep->name, ints, epctl, status,
+			     restart ? "starting the request again" : "left");
+
+	if (!restart)
+		return;
+
+	hs_ep->req = NULL;
+	dwc2_hsotg_start_req(hsotg, hs_ep, hs_req, false);
+}
+
 /**
  * dwc2_hsotg_rx_data - receive data from the FIFO for an endpoint
  * @hsotg: The device state.
@@ -2754,6 +2829,8 @@ static void dwc2_hsotg_complete_in(struct dwc2_hsotg *hsotg,
 	 * aligned).
 	 */
 	if (using_desc_dma(hsotg)) {
+		if (hs_ep->index)
+			dwc2_gadget_wait_desc_done(hs_ep);
 		size_left = dwc2_gadget_get_xfersize_ddma(hs_ep);
 		if (size_left < 0)
 			dev_err(hsotg->dev, "error parsing DDMA results %d\n",
@@ -3158,7 +3235,8 @@ static void dwc2_hsotg_epint(struct dwc2_hsotg *hsotg, unsigned int idx,
 		dwc2_gadget_handle_nak(hs_ep);
 
 	if (ints & DXEPINT_AHBERR)
-		dev_dbg(hsotg->dev, "%s: AHBErr\n", __func__);
+		dev_warn_ratelimited(hsotg->dev, "%s: AHBErr, DxEPINT %08x\n",
+				     hs_ep->name, ints);
 
 	if (ints & DXEPINT_SETUP) {  /* Setup or Timeout */
 		dev_dbg(hsotg->dev, "%s: Setup/Timeout\n",  __func__);
@@ -3209,6 +3287,8 @@ static void dwc2_hsotg_epint(struct dwc2_hsotg *hsotg, unsigned int idx,
 		dev_dbg(hsotg->dev, "%s: BNA interrupt\n", __func__);
 		if (hs_ep->isochronous)
 			dwc2_gadget_handle_isoc_bna(hs_ep);
+		else if (using_desc_dma(hsotg) && idx)
+			dwc2_gadget_handle_nonisoc_bna(hs_ep, ints);
 	}
 
 	if (dir_in && !hs_ep->isochronous) {
