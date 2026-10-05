@@ -17,6 +17,9 @@ description: |
   offsets are relative to the shadow aperture, not to the controller base.
   The device ID is not specified to be a unique serial number.
 
+  A cell named mac-address covering the eight-byte UID reads as the
+  six-byte Ethernet MAC address that Sipeed's firmware derives from it.
+
 allOf:
   - $ref: nvmem.yaml#
 
@@ -59,6 +62,10 @@ examples:
             #size-cells = <1>;
 
             uid@c {
+                reg = <0x0c 0x8>;
+            };
+
+            mac-address@c {
                 reg = <0x0c 0x8>;
             };
         };
