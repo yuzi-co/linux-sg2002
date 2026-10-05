@@ -2125,6 +2125,33 @@ static void coda_sram_release(struct coda_ctx *ctx)
 	ctx->sram_held = false;
 }
 
+/*
+ * A context holds the clocks from open to release or, on a device with
+ * clocks_while_streaming, from the start of its first queue to the stop of
+ * its last one. The clock framework counts the enables, so coda_hw_init()
+ * nests inside a hold.
+ */
+static int coda_clocks_hold(struct coda_ctx *ctx)
+{
+	int ret;
+
+	if (ctx->clocks_held)
+		return 0;
+	ret = coda_enable_clocks(ctx->dev);
+	if (ret)
+		return ret;
+	ctx->clocks_held = true;
+	return 0;
+}
+
+static void coda_clocks_drop(struct coda_ctx *ctx)
+{
+	if (!ctx->clocks_held)
+		return;
+	coda_disable_clocks(ctx->dev);
+	ctx->clocks_held = false;
+}
+
 static int coda_start_streaming(struct vb2_queue *q, unsigned int count)
 {
 	struct coda_ctx *ctx = vb2_get_drv_priv(q);
@@ -2141,6 +2168,12 @@ static int coda_start_streaming(struct vb2_queue *q, unsigned int count)
 	coda_dbg(1, ctx, "start streaming %s\n", v4l2_type_names[q->type]);
 
 	INIT_LIST_HEAD(&list);
+
+	if (ctx->dev->devtype->clocks_while_streaming) {
+		ret = coda_clocks_hold(ctx);
+		if (ret)
+			goto err;
+	}
 
 	q_data_src = get_q_data(ctx, V4L2_BUF_TYPE_VIDEO_OUTPUT);
 	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT) {
@@ -2261,6 +2294,18 @@ out:
 	return 0;
 
 err:
+	/*
+	 * vb2 does not stop a queue whose start failed, so this queue does
+	 * not stream; give the clocks back if the other one does not either.
+	 */
+	if (ctx->dev->devtype->clocks_while_streaming) {
+		if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT)
+			ctx->streamon_out = 0;
+		else
+			ctx->streamon_cap = 0;
+		if (!ctx->streamon_out && !ctx->streamon_cap)
+			coda_clocks_drop(ctx);
+	}
 	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT) {
 		list_for_each_entry_safe(m2m_buf, tmp, &list, list) {
 			list_del(&m2m_buf->list);
@@ -2329,8 +2374,12 @@ static void coda_stop_streaming(struct vb2_queue *q)
 		coda_sram_release(ctx);
 	}
 
-	if (!ctx->streamon_out && !ctx->streamon_cap)
+	if (!ctx->streamon_out && !ctx->streamon_cap) {
 		ctx->bit_stream_param &= ~CODA_BIT_STREAM_END_FLAG;
+		/* SEQ_END and the stream end flag above ran with them on. */
+		if (dev->devtype->clocks_while_streaming)
+			coda_clocks_drop(ctx);
+	}
 }
 
 static const struct vb2_ops coda_qops = {
@@ -2901,9 +2950,11 @@ static int coda_open(struct file *file)
 		goto err_pm_get;
 	}
 
-	ret = coda_enable_clocks(dev);
-	if (ret)
-		goto err_clk_enable;
+	if (!dev->devtype->clocks_while_streaming) {
+		ret = coda_clocks_hold(ctx);
+		if (ret)
+			goto err_clk_enable;
+	}
 
 	set_default_params(ctx);
 	ctx->fh.m2m_ctx = v4l2_m2m_ctx_init(dev->m2m_dev, ctx,
@@ -2935,7 +2986,7 @@ static int coda_open(struct file *file)
 err_ctrls_setup:
 	v4l2_m2m_ctx_release(ctx->fh.m2m_ctx);
 err_ctx_init:
-	coda_disable_clocks(dev);
+	coda_clocks_drop(ctx);
 err_clk_enable:
 	pm_runtime_put_sync(dev->dev);
 err_pm_get:
@@ -2964,10 +3015,18 @@ static int coda_release(struct file *file)
 	if (ctx->vdoa)
 		vdoa_context_destroy(ctx->vdoa);
 
-	/* In case the instance was not running, we still need to call SEQ_END */
+	/*
+	 * In case the instance was not running, we still need to call SEQ_END.
+	 * A context that holds its clocks only while streaming takes them back
+	 * for a sequence still open; it never touches the core without them.
+	 */
 	if (ctx->ops->seq_end_work) {
-		queue_work(dev->workqueue, &ctx->seq_end_work);
-		flush_work(&ctx->seq_end_work);
+		if (ctx->initialized && coda_clocks_hold(ctx)) {
+			v4l2_err(&dev->v4l2_dev, "no clocks for SEQ_END\n");
+		} else {
+			queue_work(dev->workqueue, &ctx->seq_end_work);
+			flush_work(&ctx->seq_end_work);
+		}
 	}
 
 	if (ctx->dev->devtype->product == CODA_DX6)
@@ -2976,7 +3035,7 @@ static int coda_release(struct file *file)
 	coda_sram_release(ctx);
 
 	v4l2_ctrl_handler_free(&ctx->ctrls);
-	coda_disable_clocks(dev);
+	coda_clocks_drop(ctx);
 	pm_runtime_put_sync(dev->dev);
 	v4l2_fh_del(&ctx->fh, file);
 	v4l2_fh_exit(&ctx->fh);
@@ -3497,6 +3556,11 @@ static const struct coda_devtype sg2002_coda980_devdata = {
 	.requires_firmware_name	= true,
 	.nv21_to_nv12		= true,
 	.rstc_assert_deassert	= true,
+	/*
+	 * libkvm-v4l2 keeps the encoder open, streamed off, between viewers;
+	 * the firmware survives gated clocks, as it does from release to open.
+	 */
+	.clocks_while_streaming	= true,
 	.has_software_reset	= true,
 	.has_coda980_h264_abi = true,
 };
