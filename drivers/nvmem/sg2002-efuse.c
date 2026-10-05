@@ -1,16 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Read-only access to the SG2002's public eFuse shadow words. */
 
+#include <crypto/sha2.h>
 #include <linux/clk.h>
+#include <linux/etherdevice.h>
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/nvmem-provider.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/unaligned.h>
 
 #define SG2002_EFUSE_SHADOW 0x100
 #define SG2002_EFUSE_SIZE 0x100
+#define SG2002_EFUSE_UID 0x0c
+#define SG2002_EFUSE_UID_SIZE 8
 
 struct sg2002_efuse {
 	void __iomem *base;
@@ -73,6 +78,45 @@ unlock:
 	return ret;
 }
 
+/*
+ * Sipeed's firmware derives the Ethernet MAC from the text of the vendor
+ * base_uid attribute: 48:da:35:6f followed by the first two bytes of
+ * SHA-512("UID: %08x_%08x\n"). Match it so a board keeps its address
+ * across vendor and mainline kernels.
+ */
+static int sg2002_efuse_mac_pp(void *context, const char *id, int index,
+			       unsigned int offset, void *data, size_t bytes)
+{
+	static const u8 prefix[] = { 0x48, 0xda, 0x35, 0x6f };
+	char uid[sizeof("UID: 01234567_89abcdef\n")];
+	u8 digest[SHA512_DIGEST_SIZE];
+	u8 *buf = data;
+	int len;
+
+	if (bytes != SG2002_EFUSE_UID_SIZE)
+		return -EINVAL;
+
+	len = scnprintf(uid, sizeof(uid), "UID: %08x_%08x\n",
+			get_unaligned_le32(buf), get_unaligned_le32(buf + 4));
+	sha512((const u8 *)uid, len, digest);
+	memcpy(buf, prefix, sizeof(prefix));
+	memcpy(buf + sizeof(prefix), digest, ETH_ALEN - sizeof(prefix));
+	return 0;
+}
+
+static void sg2002_efuse_fixup_dt_cell_info(struct nvmem_device *nvmem,
+					    struct nvmem_cell_info *cell)
+{
+	if (!of_node_name_eq(cell->np, "mac-address") ||
+	    cell->offset != SG2002_EFUSE_UID ||
+	    cell->bytes != SG2002_EFUSE_UID_SIZE || cell->nbits)
+		return;
+
+	cell->raw_len = SG2002_EFUSE_UID_SIZE;
+	cell->bytes = ETH_ALEN;
+	cell->read_post_process = sg2002_efuse_mac_pp;
+}
+
 static int sg2002_efuse_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -89,6 +133,7 @@ static int sg2002_efuse_probe(struct platform_device *pdev)
 		.root_only = true,
 		.reg_read = sg2002_efuse_read,
 		.keepout = sg2002_efuse_keepout,
+		.fixup_dt_cell_info = sg2002_efuse_fixup_dt_cell_info,
 		.nkeepout = ARRAY_SIZE(sg2002_efuse_keepout),
 	};
 	struct sg2002_efuse *efuse;
