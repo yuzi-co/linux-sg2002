@@ -108,9 +108,53 @@ module_param(coda980_sram_axi, int, 0644);
 MODULE_PARM_DESC(coda980_sram_axi,
 		 "Coda980 H.264: secondary AXI buffers in the codec SRAM, bit 0 BIT, 1 IP, 2 DBK luma, 3 DBK chroma");
 
+/*
+ * The rest of the Coda980's ME_OPTION word: the horizontal search range in
+ * bits 1:0 (0 -64..63, 1 -48..47, 2 -32..31, 3 -16..15), the vertical one in
+ * bits 3:2 (0 -48..47, 1 -32..31, 2 -16..15), zero PMV in bit 4 and the
+ * enabled partitions in bits 8:5 (bit 0 16x16, 1 16x8, 2 8x16, 3 8x8; 0 or
+ * 0xf all). Sophgo's cv18xx vcodec writes horizontal 3 and vertical 2, PMV
+ * from the neighbours and all partitions. Read at every stream start.
+ *
+ * The vertical range has to fit the line buffer of line-buffer mode 0 (36
+ * lines, -16..15). With 0 (-48..47), which the driver wrote before, a 1080p
+ * picture took 12.9 ms instead of 11.4 alone and 15.6 instead of 11.4 beside
+ * the VPSS: the ME then reads reference rows from DRAM as it goes. 1
+ * (-32..31) takes 12.3 ms beside the VPSS. The horizontal range costs
+ * nothing measurable, so it stays at the widest.
+ */
+static int coda980_me_range_x;
+module_param(coda980_me_range_x, int, 0644);
+MODULE_PARM_DESC(coda980_me_range_x,
+		 "Coda980 H.264: ME horizontal search range, 0 (+-64, default) to 3 (+-16)");
+
+static int coda980_me_range_y = 2;
+module_param(coda980_me_range_y, int, 0644);
+MODULE_PARM_DESC(coda980_me_range_y,
+		 "Coda980 H.264: ME vertical search range, 0 (+-48) to 2 (+-16, default)");
+
+static int coda980_me_blk_mode;
+module_param(coda980_me_blk_mode, int, 0644);
+MODULE_PARM_DESC(coda980_me_blk_mode,
+		 "Coda980 H.264: ME partitions, bit 0 16x16, 1 16x8, 2 8x16, 3 8x8 (0: all)");
+
+static bool coda980_me_zero_pmv;
+module_param(coda980_me_zero_pmv, bool, 0644);
+MODULE_PARM_DESC(coda980_me_zero_pmv,
+		 "Coda980 H.264: ME searches around a zero PMV");
+
 static u32 coda980_me_line_buffer_mode(void)
 {
 	return clamp(coda980_me_linebuf, 0, 2);
+}
+
+static u32 coda980_me_option(void)
+{
+	return coda980_me_line_buffer_mode() << CODA980_ME_LINE_BUFFER_MODE_SHIFT |
+	       (clamp(coda980_me_blk_mode, 0, 15) << 5) |
+	       (coda980_me_zero_pmv ? BIT(4) : 0) |
+	       (clamp(coda980_me_range_y, 0, 2) << 2) |
+	       clamp(coda980_me_range_x, 0, 3);
 }
 
 static bool coda_is_coda980_h264(struct coda_ctx *ctx)
@@ -1684,7 +1728,9 @@ static int coda_start_encoding(struct coda_ctx *ctx)
 			break;
 		case CODA_960:
 			if (dev->devtype->has_coda980_h264_abi)
-				coda_write(dev, coda980_me_line_buffer_mode() <<
+				coda_write(dev, coda980_h264 ?
+					   coda980_me_option() :
+					   coda980_me_line_buffer_mode() <<
 					   CODA980_ME_LINE_BUFFER_MODE_SHIFT,
 					   CODA9_CMD_ENC_SEQ_ME_OPTION);
 			else
