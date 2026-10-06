@@ -60,10 +60,17 @@ static const struct v4l2_dv_timings_cap lt6911uxe_timings_cap_4kp30 = {
 	.type = V4L2_DV_BT_656_1120,
 	/* keep this initialization for compatibility with CLANG */
 	.reserved = { 0 },
-	/* Pixel clock from REF_01 p. 20. Min/max height/width are unknown */
+	/*
+	 * Pixel clock from REF_01 p. 20. Min/max height/width are unknown.
+	 * The UXC reports no clock: its timings are made up from the active
+	 * size at 60 Hz with 160 and 45 blanking, which puts 1024x768 at
+	 * 58 MHz, 800x600 at 37 MHz, 640x480 at 25 MHz and 720x400 at 23 MHz.
+	 * Those are modes a host's firmware and installers use, so the
+	 * minimum is 20 MHz, below the 25 MHz HDMI floor.
+	 */
 	V4L2_INIT_BT_TIMINGS(160, 3840,			/* min/max width */
 			     120, 2160,			/* min/max height */
-			     50000000, 594000000,	/* min/max pixelclock */
+			     20000000, 594000000,	/* min/max pixelclock */
 			     V4L2_DV_BT_STD_CEA861 | V4L2_DV_BT_STD_DMT |
 			     V4L2_DV_BT_STD_CVT,
 			     V4L2_DV_BT_CAP_PROGRESSIVE |
