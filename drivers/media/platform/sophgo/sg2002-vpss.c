@@ -546,6 +546,7 @@ static int vpss_try_fmt(struct file *file, void *priv, struct v4l2_format *f)
 	struct vpss_ctx *ctx = file->private_data;
 	struct v4l2_pix_format *pix = &f->fmt.pix;
 	const struct vpss_fmt *fmt;
+	u32 stride = pix->bytesperline;
 
 	fmt = vpss_find_fmt(pix->pixelformat, V4L2_TYPE_IS_OUTPUT(f->type));
 	pix->pixelformat = fmt->fourcc;
@@ -556,6 +557,15 @@ static int vpss_try_fmt(struct file *file, void *priv, struct v4l2_format *f)
 	pix->height = round_down(pix->height, 2);
 	pix->field = V4L2_FIELD_NONE;
 	pix->bytesperline = pix->width * fmt->y_depth / 8;
+	/*
+	 * A packed source may come with padded lines: the CSI capture rounds
+	 * its line to 16 bytes, which a 1366 or 1368 pixel wide HDMI mode
+	 * needs. IMG_PITCH_Y takes any line, so keep the caller's, rounded
+	 * up to 16 bytes and at most two lines' worth.
+	 */
+	if (V4L2_TYPE_IS_OUTPUT(f->type) && !fmt->is_420sp &&
+	    stride > pix->bytesperline)
+		pix->bytesperline = min(ALIGN(stride, 16), 2 * pix->bytesperline);
 	pix->sizeimage = pix->bytesperline * pix->height;
 	if (fmt->is_420sp)
 		pix->sizeimage += pix->width * pix->height / 2;
