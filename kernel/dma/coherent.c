@@ -3,7 +3,9 @@
  * Coherent per-device memory handling.
  * Borrowed from i386
  */
+#include <linux/debugfs.h>
 #include <linux/io.h>
+#include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -18,6 +20,10 @@ struct dma_coherent_mem {
 	unsigned long	*bitmap;
 	spinlock_t	spinlock;
 	bool		use_dev_dma_pfn_offset;
+	/* Pages handed out now and at most, failed allocations (debugfs) */
+	int		used;
+	int		peak;
+	unsigned long	failed;
 };
 
 static inline struct dma_coherent_mem *dev_get_coherent_memory(struct device *dev)
@@ -156,6 +162,8 @@ static void *__dma_alloc_from_coherent(struct device *dev,
 	pageno = bitmap_find_free_region(mem->bitmap, mem->size, order);
 	if (unlikely(pageno < 0))
 		goto err;
+	mem->used += 1 << order;
+	mem->peak = max(mem->peak, mem->used);
 
 	/*
 	 * Memory was found in the coherent area.
@@ -168,6 +176,7 @@ static void *__dma_alloc_from_coherent(struct device *dev,
 		memset(ret, 0, size);
 	return ret;
 err:
+	mem->failed++;
 	spin_unlock_irqrestore(&mem->spinlock, flags);
 	return NULL;
 }
@@ -216,6 +225,7 @@ static int __dma_release_from_coherent(struct dma_coherent_mem *mem,
 
 		spin_lock_irqsave(&mem->spinlock, flags);
 		bitmap_release_region(mem->bitmap, page, order);
+		mem->used -= 1 << order;
 		spin_unlock_irqrestore(&mem->spinlock, flags);
 		return 1;
 	}
@@ -345,6 +355,94 @@ static phys_addr_t dma_reserved_default_memory_base __initdata;
 static phys_addr_t dma_reserved_default_memory_size __initdata;
 #endif
 
+/*
+ * debugfs dma_coherent/<node name>: how much of a reserved pool is handed
+ * out now and at most, the longest free run, how many allocations found no
+ * room, and a map with one character a chunk ('.' free, '+' partly used,
+ * '#' used). A write resets the peak to the current use and the failures to
+ * zero. The pool is no-map memory outside the page allocator, so neither
+ * MemAvailable nor CmaFree shows it.
+ */
+#define DMA_COHERENT_MAP_CHUNKS	64
+
+static int dma_coherent_mem_show(struct seq_file *s, void *unused)
+{
+	struct dma_coherent_mem *mem = s->private;
+	char map[DMA_COHERENT_MAP_CHUNKS + 1];
+	unsigned long start, end, largest = 0, failed, flags;
+	int chunk, chunks, used, peak, i, j, n;
+
+	chunk = max_t(int, SZ_1M >> PAGE_SHIFT,
+		      DIV_ROUND_UP(mem->size, DMA_COHERENT_MAP_CHUNKS));
+	chunks = DIV_ROUND_UP(mem->size, chunk);
+
+	spin_lock_irqsave(&mem->spinlock, flags);
+	used = mem->used;
+	peak = mem->peak;
+	failed = mem->failed;
+	for_each_clear_bitrange(start, end, mem->bitmap, mem->size)
+		largest = max(largest, end - start);
+	for (i = 0; i < chunks; i++) {
+		int first = i * chunk, last = min(first + chunk, mem->size);
+
+		for (j = first, n = 0; j < last; j++)
+			n += test_bit(j, mem->bitmap);
+		map[i] = n == 0 ? '.' : n == last - first ? '#' : '+';
+	}
+	map[chunks] = '\0';
+	spin_unlock_irqrestore(&mem->spinlock, flags);
+
+	seq_printf(s, "size_kib %d\n", mem->size << (PAGE_SHIFT - 10));
+	seq_printf(s, "used_kib %d\n", used << (PAGE_SHIFT - 10));
+	seq_printf(s, "free_kib %d\n", (mem->size - used) << (PAGE_SHIFT - 10));
+	seq_printf(s, "largest_free_kib %lu\n", largest << (PAGE_SHIFT - 10));
+	seq_printf(s, "peak_used_kib %d\n", peak << (PAGE_SHIFT - 10));
+	seq_printf(s, "failed %lu\n", failed);
+	seq_printf(s, "map_chunk_kib %d\n", chunk << (PAGE_SHIFT - 10));
+	seq_printf(s, "map %s\n", map);
+	return 0;
+}
+
+static int dma_coherent_mem_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, dma_coherent_mem_show, inode->i_private);
+}
+
+static ssize_t dma_coherent_mem_write(struct file *file, const char __user *buf,
+				      size_t count, loff_t *ppos)
+{
+	struct dma_coherent_mem *mem =
+		((struct seq_file *)file->private_data)->private;
+	unsigned long flags;
+
+	spin_lock_irqsave(&mem->spinlock, flags);
+	mem->peak = mem->used;
+	mem->failed = 0;
+	spin_unlock_irqrestore(&mem->spinlock, flags);
+	return count;
+}
+
+static const struct file_operations dma_coherent_mem_fops = {
+	.owner		= THIS_MODULE,
+	.open		= dma_coherent_mem_open,
+	.read		= seq_read,
+	.write		= dma_coherent_mem_write,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static void dma_coherent_debugfs_add(struct dma_coherent_mem *mem,
+				     const char *name)
+{
+	static struct dentry *dir;
+
+	if (!IS_ENABLED(CONFIG_DEBUG_FS))
+		return;
+	if (!dir)
+		dir = debugfs_create_dir("dma_coherent", NULL);
+	debugfs_create_file(name, 0600, dir, mem, &dma_coherent_mem_fops);
+}
+
 static int rmem_dma_device_init(struct reserved_mem *rmem, struct device *dev)
 {
 	struct dma_coherent_mem *mem = rmem->priv;
@@ -355,6 +453,7 @@ static int rmem_dma_device_init(struct reserved_mem *rmem, struct device *dev)
 		if (IS_ERR(mem))
 			return PTR_ERR(mem);
 		rmem->priv = mem;
+		dma_coherent_debugfs_add(mem, rmem->name);
 	}
 
 	/* Warn if the device potentially can't use the reserved memory */
