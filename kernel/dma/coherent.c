@@ -144,25 +144,47 @@ void dma_release_coherent_memory(struct device *dev)
 	}
 }
 
+/*
+ * A device pool hands out the pages a buffer needs, aligned as CMA aligns
+ * them: to the buffer's order, at most 2^DMA_COHERENT_MAX_ALIGN_ORDER
+ * pages (1 MiB with 4 KiB pages, CONFIG_CMA_ALIGNMENT's default). Rounded
+ * up to a power of two, as the global pool still is, a 4.4 MiB video frame
+ * took an 8 MiB block at an 8 MiB boundary.
+ */
+#define DMA_COHERENT_MAX_ALIGN_ORDER	8
+
+static int dma_coherent_pages(ssize_t size, bool exact)
+{
+	return exact ? PAGE_ALIGN(size) >> PAGE_SHIFT : 1 << get_order(size);
+}
+
 static void *__dma_alloc_from_coherent(struct device *dev,
 				       struct dma_coherent_mem *mem,
 				       ssize_t size, dma_addr_t *dma_handle,
-				       bool clear)
+				       bool clear, bool exact)
 {
 	int order = get_order(size);
+	int count = dma_coherent_pages(size, exact);
+	unsigned long align;
 	unsigned long flags;
-	int pageno;
+	unsigned long pageno;
 	void *ret;
+
+	if (exact)
+		order = min(order, DMA_COHERENT_MAX_ALIGN_ORDER);
+	align = (1UL << order) - 1;
 
 	spin_lock_irqsave(&mem->spinlock, flags);
 
 	if (unlikely(size > ((dma_addr_t)mem->size << PAGE_SHIFT)))
 		goto err;
 
-	pageno = bitmap_find_free_region(mem->bitmap, mem->size, order);
-	if (unlikely(pageno < 0))
+	pageno = bitmap_find_next_zero_area(mem->bitmap, mem->size, 0, count,
+					    align);
+	if (unlikely(pageno >= mem->size))
 		goto err;
-	mem->used += 1 << order;
+	bitmap_set(mem->bitmap, pageno, count);
+	mem->used += count;
 	mem->peak = max(mem->peak, mem->used);
 
 	/*
@@ -211,12 +233,13 @@ int dma_alloc_from_dev_coherent(struct device *dev, ssize_t size,
 		return 0;
 
 	*ret = __dma_alloc_from_coherent(dev, mem, size, dma_handle,
-					 !(attrs & DMA_ATTR_NO_KERNEL_MAPPING));
+					 !(attrs & DMA_ATTR_NO_KERNEL_MAPPING),
+					 true);
 	return 1;
 }
 
 static int __dma_release_from_coherent(struct dma_coherent_mem *mem,
-				       int order, void *vaddr)
+				       int count, void *vaddr)
 {
 	if (mem && vaddr >= mem->virt_base && vaddr <
 		   (mem->virt_base + ((dma_addr_t)mem->size << PAGE_SHIFT))) {
@@ -224,8 +247,8 @@ static int __dma_release_from_coherent(struct dma_coherent_mem *mem,
 		unsigned long flags;
 
 		spin_lock_irqsave(&mem->spinlock, flags);
-		bitmap_release_region(mem->bitmap, page, order);
-		mem->used -= 1 << order;
+		bitmap_clear(mem->bitmap, page, count);
+		mem->used -= count;
 		spin_unlock_irqrestore(&mem->spinlock, flags);
 		return 1;
 	}
@@ -235,7 +258,7 @@ static int __dma_release_from_coherent(struct dma_coherent_mem *mem,
 /**
  * dma_release_from_dev_coherent() - free memory to device coherent memory pool
  * @dev:	device from which the memory was allocated
- * @order:	the order of pages allocated
+ * @size:	size of the allocation, as passed to dma_alloc_from_dev_coherent()
  * @vaddr:	virtual address of allocated pages
  *
  * This checks whether the memory was allocated from the per-device
@@ -244,11 +267,13 @@ static int __dma_release_from_coherent(struct dma_coherent_mem *mem,
  * Returns 1 if we correctly released the memory, or 0 if the caller should
  * proceed with releasing memory from generic pools.
  */
-int dma_release_from_dev_coherent(struct device *dev, int order, void *vaddr)
+int dma_release_from_dev_coherent(struct device *dev, ssize_t size,
+				  void *vaddr)
 {
 	struct dma_coherent_mem *mem = dev_get_coherent_memory(dev);
 
-	return __dma_release_from_coherent(mem, order, vaddr);
+	return __dma_release_from_coherent(mem, dma_coherent_pages(size, true),
+					   vaddr);
 }
 
 static int __dma_mmap_from_coherent(struct dma_coherent_mem *mem,
@@ -307,7 +332,7 @@ void *dma_alloc_from_global_coherent(struct device *dev, ssize_t size,
 		return NULL;
 
 	return __dma_alloc_from_coherent(dev, dma_coherent_default_memory, size,
-					 dma_handle, true);
+					 dma_handle, true, false);
 }
 
 int dma_release_from_global_coherent(int order, void *vaddr)
@@ -315,8 +340,8 @@ int dma_release_from_global_coherent(int order, void *vaddr)
 	if (!dma_coherent_default_memory)
 		return 0;
 
-	return __dma_release_from_coherent(dma_coherent_default_memory, order,
-			vaddr);
+	return __dma_release_from_coherent(dma_coherent_default_memory,
+					   1 << order, vaddr);
 }
 
 int dma_mmap_from_global_coherent(struct vm_area_struct *vma, void *vaddr,

@@ -688,7 +688,7 @@ void dma_free_attrs(struct device *dev, size_t size, void *cpu_addr,
 {
 	const struct dma_map_ops *ops = get_dma_ops(dev);
 
-	if (dma_release_from_dev_coherent(dev, get_order(size), cpu_addr))
+	if (dma_release_from_dev_coherent(dev, size, cpu_addr))
 		return;
 	/*
 	 * On non-coherent platforms which implement DMA-coherent buffers via
