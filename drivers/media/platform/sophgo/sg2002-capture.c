@@ -5,7 +5,8 @@
  * This is deliberately a narrow bring-up driver for the NanoKVM capture
  * path: one CSI-2 D-PHY input, one to four lanes, and the VI FE0 CSI
  * bridge DMA engine. The frame geometry is adopted from the bound
- * source: the NanoKVM's LT6911UXE HDMI bridge (UYVY 1920x1080) or a RAW
+ * source: the NanoKVM's LT6911UXE HDMI bridge (UYVY at the HDMI mode's
+ * size, 1920x1080 until the bridge reports one) or a RAW
  * Bayer sensor such as the LicheeRV Nano's GC4653 (SRGGB10 2560x1440,
  * packed 4 px / 5 B by the bridge DMA). The register programming is
  * derived from the vendor cif and vi drivers.
@@ -48,6 +49,16 @@
 #define SG2002_BYTES_PER_LINE	ALIGN(SG2002_WIDTH * 2, 16)
 #define SG2002_SIZE_IMAGE	(SG2002_BYTES_PER_LINE * SG2002_HEIGHT)
 #define SG2002_CAPTURE_MAX_BUFFERS	4
+
+/*
+ * The frame sizes a packed YUV source may switch to. The bridge's size
+ * fields hold 13 bits; the LT6911 reports up to 3840x2160. Whether such a
+ * frame fits the media pool is the reader's business: REQBUFS fails when
+ * it does not.
+ */
+#define SG2002_YUV_MIN_SIZE	16
+#define SG2002_YUV_MAX_WIDTH	3840
+#define SG2002_YUV_MAX_HEIGHT	2160
 
 /*
  * With two buffers a reader that takes one picture in two loses the newest
@@ -331,6 +342,48 @@ static void sg2002_adopt_source_format(struct sg2002_capture *cap)
 	dev_info(cap->dev, "RAW source %ux%u code %#x -> %p4cc, %u B/line\n",
 		 cap->width, cap->height, cap->mbus_code,
 		 &cap->pixelformat, cap->bytesperline);
+}
+
+/*
+ * An HDMI source changes mode whenever the host does, and the LT6911 can
+ * deliver any mode its EDID offers, not only 1920x1080. While the queue
+ * holds no buffers, take the frame size from the source's active pad
+ * format, which the bridge refreshes on every QUERY_DV_TIMINGS. A source
+ * without a signal reports 0x0; the last size stays. RAW sources keep the
+ * geometry adopted at bind time. The caller holds cap->lock.
+ */
+static void sg2002_follow_source_size(struct sg2002_capture *cap)
+{
+	struct v4l2_subdev_format fmt = {
+		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+		.pad = cap->source_pad,
+	};
+	u32 width, height;
+
+	lockdep_assert_held(&cap->lock);
+	if (!cap->source || !cap->yuv_input || vb2_is_busy(&cap->queue))
+		return;
+	if (v4l2_subdev_call_state_active(cap->source, pad, get_fmt, &fmt))
+		return;
+	if (fmt.format.code != cap->mbus_code ||
+	    fmt.format.field != V4L2_FIELD_NONE)
+		return;
+
+	width = fmt.format.width;
+	height = fmt.format.height;
+	if (width < SG2002_YUV_MIN_SIZE || width > SG2002_YUV_MAX_WIDTH ||
+	    height < SG2002_YUV_MIN_SIZE || height > SG2002_YUV_MAX_HEIGHT ||
+	    (width & 1))
+		return;
+	if (width == cap->width && height == cap->height)
+		return;
+
+	dev_dbg(cap->dev, "source size %ux%u -> %ux%u\n", cap->width,
+		cap->height, width, height);
+	cap->width = width;
+	cap->height = height;
+	cap->bytesperline = ALIGN(width * 2, 16);
+	cap->sizeimage = cap->bytesperline * height;
 }
 
 static void sg2002_update_bits(void __iomem *base, u32 reg, u32 mask, u32 val)
@@ -1198,6 +1251,7 @@ static int sg2002_g_fmt(struct file *file, void *priv, struct v4l2_format *fmt)
 {
 	struct sg2002_capture *cap = video_drvdata(file);
 
+	sg2002_follow_source_size(cap);
 	sg2002_fill_pix_format(cap, &fmt->fmt.pix);
 	return 0;
 }
@@ -1208,6 +1262,7 @@ static int sg2002_try_fmt(struct file *file, void *priv,
 	struct sg2002_capture *cap = video_drvdata(file);
 	u32 requested = fmt->fmt.pix.pixelformat;
 
+	sg2002_follow_source_size(cap);
 	sg2002_fill_pix_format(cap, &fmt->fmt.pix);
 	if (!cap->yuv_input) {
 		struct v4l2_pix_format *pix = &fmt->fmt.pix;
@@ -1262,6 +1317,7 @@ static int sg2002_enum_framesizes(struct file *file, void *priv,
 {
 	struct sg2002_capture *cap = video_drvdata(file);
 
+	sg2002_follow_source_size(cap);
 	if (fsize->index ||
 	    (fsize->pixel_format == V4L2_PIX_FMT_NV21 && ((cap->width | cap->height) & 1)) ||
 	    (cap->yuv_input ? fsize->pixel_format != V4L2_PIX_FMT_UYVY :
@@ -1361,9 +1417,10 @@ static void sg2002_notify(struct v4l2_subdev *sd, unsigned int notification,
 		return;
 
 	/*
-	 * DMA geometry is fixed at 1920x1080 UYVY. A source change while it is
-	 * running cannot be applied safely, so stop DMA and fail the queue until
-	 * userspace negotiates the fixed format again.
+	 * The DMA geometry is fixed while buffers exist. A source change while
+	 * it is running cannot be applied safely, so stop DMA and fail the
+	 * queue; once userspace frees the buffers, G_FMT and S_FMT report the
+	 * source's new size (sg2002_follow_source_size).
 	 */
 	if (READ_ONCE(cap->streaming))
 		sg2002_capture_error(cap);
@@ -1657,7 +1714,7 @@ static int sg2002_probe(struct platform_device *pdev)
 		goto err_endpoint_put;
 
 	fwnode_handle_put(endpoint);
-	dev_info(&pdev->dev, "registered four-lane 1080p UYVY capture\n");
+	dev_info(&pdev->dev, "registered CSI capture, UYVY at the source's size\n");
 	return 0;
 
 err_endpoint_put:
