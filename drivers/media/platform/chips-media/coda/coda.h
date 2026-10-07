@@ -342,6 +342,17 @@ struct coda_ctx {
 	 * or wakes up the capture queue to signal EOS afterwards.
 	 */
 	struct mutex			wakeup_mutex;
+	/* Coda980 H.264 picture-level rate control (rate-control mode 4) */
+	struct {
+		bool			on;
+		bool			have[2];	/* 0: I, 1: P */
+		int			last_qp[2];
+		u32			last_bits[2];
+		s64			level;
+		u32			avg;
+		u32			target;
+		int			qp;
+	} prc;
 };
 
 extern int coda_debug;

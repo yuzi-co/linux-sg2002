@@ -85,6 +85,55 @@ module_param(coda980_intra_weight, int, 0644);
 MODULE_PARM_DESC(coda980_intra_weight, "Coda980 H.264: intra cost weight");
 
 /*
+ * Experimental (trial 62): the firmware's own rate control (mode 1) against
+ * picture-level rate control by the driver (mode 4, as Sophgo's cv18xx
+ * vcodec runs it): the driver gives each picture its QP and a bit target, the
+ * firmware's row-level rate control holds the picture to the target.
+ */
+static int coda980_rc_mode = 1;
+module_param(coda980_rc_mode, int, 0644);
+MODULE_PARM_DESC(coda980_rc_mode,
+		 "Coda980 H.264: rate-control mode, 1 firmware CBR, 4 picture level by the driver");
+
+static int coda980_max_intra_size;
+module_param(coda980_max_intra_size, int, 0644);
+MODULE_PARM_DESC(coda980_max_intra_size,
+		 "Coda980 H.264: RC_MAX_INTRA_SIZE, written with its enable bit (0: off)");
+
+static int coda980_prc_iprop = 10;
+module_param(coda980_prc_iprop, int, 0644);
+MODULE_PARM_DESC(coda980_prc_iprop,
+		 "Coda980 H.264 mode 4: largest I to P picture size ratio, as Sophgo's maxIprop");
+
+static int coda980_prc_p_step = 2;
+module_param(coda980_prc_p_step, int, 0644);
+MODULE_PARM_DESC(coda980_prc_p_step,
+		 "Coda980 H.264 mode 4: largest P picture QP step down (twice that up)");
+
+static int coda980_prc_qp0 = 38;
+module_param(coda980_prc_qp0, int, 0644);
+MODULE_PARM_DESC(coda980_prc_qp0, "Coda980 H.264 mode 4: QP of the first I picture");
+
+static int coda980_prc_fixed_qp = -1;
+module_param(coda980_prc_fixed_qp, int, 0644);
+MODULE_PARM_DESC(coda980_prc_fixed_qp,
+		 "Coda980 H.264 mode 4: every picture at this QP (-1: by the rate control)");
+
+static int coda980_prc_row_dqp = -1;
+module_param(coda980_prc_row_dqp, int, 0644);
+MODULE_PARM_DESC(coda980_prc_row_dqp,
+		 "Coda980 H.264 mode 4: row QP swing around the picture QP (-1: 0..51)");
+
+static int coda980_prc_ptarget_max = 4;
+module_param(coda980_prc_ptarget_max, int, 0644);
+MODULE_PARM_DESC(coda980_prc_ptarget_max,
+		 "Coda980 H.264 mode 4: largest P picture target in mean pictures");
+
+static bool coda980_prc_log;
+module_param(coda980_prc_log, bool, 0644);
+MODULE_PARM_DESC(coda980_prc_log, "Coda980 H.264 mode 4: log every picture");
+
+/*
  * The Coda980 motion estimation splits its memory between a reference line
  * buffer and the integer search memory: mode 0 gives 36 lines (vertical
  * search -16..15) and 13.75 KiB of search memory, mode 1 68 lines and
@@ -1627,7 +1676,8 @@ static int coda_start_encoding(struct coda_ctx *ctx)
 			rc_para2 = (ctx->params.bitrate &
 				    CODA980_RATECONTROL_BITRATE_MASK)
 				   << CODA980_RATECONTROL_BITRATE_OFFSET;
-			rc_para2 |= CODA980_RATECONTROL_MODE_CBR;
+			ctx->prc.on = coda980_rc_mode == 4;
+			rc_para2 |= ctx->prc.on ? 4 : CODA980_RATECONTROL_MODE_CBR;
 			if (coda980_hvs >= 0) {
 				value |= CODA980_RC_HVS_MAX_DELTA_QP;
 				rc_para2 |= CODA980_RC_HVS_QP_ENABLE |
@@ -1669,10 +1719,20 @@ static int coda_start_encoding(struct coda_ctx *ctx)
 		 * driver writes them, so leave nothing behind from an earlier
 		 * command.
 		 */
-		coda_write(dev, 0, CODA980_CMD_ENC_SEQ_RC_MAX_INTRA_SIZE);
+		coda_write(dev, coda980_max_intra_size > 0 ?
+			   BIT(16) | (coda980_max_intra_size & 0xffff) : 0,
+			   CODA980_CMD_ENC_SEQ_RC_MAX_INTRA_SIZE);
 		coda_write(dev, 0, CODA980_CMD_ENC_SEQ_DELTA_QP);
 		coda_dbg(1, ctx, "RC_PARA 0x%08x RC_PARA2 0x%08x QP_RANGE 0x%08x frame rate 0x%08x\n",
 			 value, rc_para2, qp_range, ctx->params.framerate);
+		if (!rc_para2)
+			ctx->prc.on = false;
+		ctx->prc.have[0] = ctx->prc.have[1] = false;
+		ctx->prc.level = 0;
+		if (coda980_prc_log || coda980_max_intra_size)
+			v4l2_info(&dev->v4l2_dev,
+				  "coda980 rc: RC_PARA 0x%08x RC_PARA2 0x%08x QP_RANGE 0x%08x max intra %d\n",
+				  value, rc_para2, qp_range, coda980_max_intra_size);
 	}
 
 	coda_write(dev, ctx->params.vbv_size, CODA_CMD_ENC_SEQ_RC_BUF_SIZE);
@@ -2027,6 +2087,148 @@ out_cpu_access:
 	return ret;
 }
 
+/* Registers of the Coda980's picture-level rate control (mode 4). */
+#define CODA980_CMD_ENC_PIC_TARGET_BIT		0x1c0
+#define CODA980_CMD_ENC_PIC_RC_BUF_LEVEL	0x1c8
+#define CODA980_CMD_ENC_PIC_RC_BUF_SIZE		0x1cc
+#define CODA980_CMD_ENC_PIC_RC_QP		0x1d4
+#define CODA980_RET_ENC_PIC_SUM_QP		0x1e4
+
+/* round(6 * log2(a / b)), within -12..12: the QP step that scales bits by a/b */
+static int coda980_prc_qp_delta(u32 a, u32 b)
+{
+	u64 x = max(a, 1u), t = max(b, 1u);
+	int d = 0;
+
+	/* 2^(1/6) = 1149 / 1024, 2^(1/12) = 1085 / 1024 */
+	while (d < 12 && x * 1024 >= t * 1085) {
+		t = t * 1149 / 1024;
+		d++;
+	}
+	while (d > -12 && x * 1085 < t * 1024) {
+		t = t * 1024 / 1149;
+		d--;
+	}
+	return d;
+}
+
+static void coda980_prc_limits(struct coda_ctx *ctx, bool intra, int *lo, int *hi)
+{
+	struct coda_params *p = &ctx->params;
+
+	*lo = max(p->h264_min_qp, intra ? p->h264_i_min_qp : p->h264_p_min_qp);
+	*hi = min(p->h264_max_qp, intra ? p->h264_i_max_qp : p->h264_p_max_qp);
+	if (*hi < *lo)
+		*hi = *lo;
+}
+
+/*
+ * Picture QP and bit target for the next picture. The buffer level counts the
+ * bits spent beyond the mean picture budget. An I picture gets at most iprop
+ * times a P picture's share of the GOP (Sophgo's maxIPicBit); a P picture
+ * pays back the level over half a second, or spends what still pictures left
+ * over, to refine the picture the I picture left.
+ */
+static void coda980_prc_prepare(struct coda_ctx *ctx, bool intra)
+{
+	struct coda_dev *dev = ctx->dev;
+	u32 den = ctx->params.framerate & CODA_FRATE_RES_MASK;
+	u32 num = (ctx->params.framerate >> CODA_FRATE_DIV_OFFSET) + 1;
+	u32 bits_s = ctx->params.bitrate * 1000;
+	u32 vbv = ctx->params.vbv_delay ? ctx->params.vbv_delay :
+		  CODA980_DEFAULT_VBV_DELAY;
+	u32 bs = ctx->params.bitrate * vbv;
+	u32 fps = den && num ? max(den / num, 1u) : 30;
+	u32 gop = ctx->params.gop_size;
+	int t = intra ? 0 : 1;
+	int lo, hi, qp, row_minus, row_plus;
+	s64 target;
+	u32 avg;
+
+	avg = den && num ? div_u64((u64)bits_s * num, den) : bits_s / 30;
+	avg = max(avg, 1u);
+	if (intra) {
+		int ip = max(coda980_prc_iprop, 1);
+
+		target = gop > 1 ? div_u64((u64)ip * gop * avg, ip + gop - 1) :
+			 avg;
+	} else {
+		target = avg - div_s64(ctx->prc.level, max(fps / 2, 1u));
+		target = clamp_t(s64, target, avg / 4,
+				 (s64)avg * max(coda980_prc_ptarget_max, 1));
+	}
+
+	coda980_prc_limits(ctx, intra, &lo, &hi);
+	if (ctx->prc.have[t]) {
+		int d = coda980_prc_qp_delta(ctx->prc.last_bits[t], target);
+
+		/*
+		 * A P picture's bits swing with what the one before left to
+		 * refine: move its QP by a few steps at a time, faster up.
+		 */
+		if (!intra)
+			d = clamp(d, -coda980_prc_p_step, 2 * coda980_prc_p_step);
+		qp = ctx->prc.last_qp[t] + d;
+	} else if (!intra && ctx->prc.have[0]) {
+		qp = ctx->prc.last_qp[0];
+	}
+	else {
+		qp = coda980_prc_qp0;
+	}
+	if (coda980_prc_fixed_qp >= 0)
+		qp = coda980_prc_fixed_qp;
+	qp = clamp(qp, lo, hi);
+
+	if (coda980_prc_row_dqp >= 0) {
+		row_minus = min(coda980_prc_row_dqp, qp);
+		row_plus = min(coda980_prc_row_dqp, 51 - qp);
+	} else {
+		row_minus = qp;
+		row_plus = 51 - qp;
+	}
+
+	ctx->prc.avg = avg;
+	ctx->prc.target = target;
+	ctx->prc.qp = qp;
+
+	coda_write(dev, target, CODA980_CMD_ENC_PIC_TARGET_BIT);
+	coda_write(dev, clamp_t(s64, ctx->prc.level, 0, bs),
+		   CODA980_CMD_ENC_PIC_RC_BUF_LEVEL);
+	coda_write(dev, bs, CODA980_CMD_ENC_PIC_RC_BUF_SIZE);
+	coda_write(dev, row_minus << 26 | row_plus << 20 | qp << 12,
+		   CODA980_CMD_ENC_PIC_RC_QP);
+}
+
+static void coda980_prc_finish(struct coda_ctx *ctx, u32 bytes, bool intra)
+{
+	struct coda_dev *dev = ctx->dev;
+	struct coda_q_data *q = get_q_data(ctx, V4L2_BUF_TYPE_VIDEO_OUTPUT);
+	u32 mbs = DIV_ROUND_UP(q->width, 16) * DIV_ROUND_UP(q->height, 16);
+	u32 sum_qp = coda_read(dev, CODA980_RET_ENC_PIC_SUM_QP);
+	u32 bits = bytes * 8;
+	int t = intra ? 0 : 1;
+	int qp = ctx->prc.qp;
+	u32 bs = ctx->params.bitrate *
+		 (ctx->params.vbv_delay ? ctx->params.vbv_delay :
+		  CODA980_DEFAULT_VBV_DELAY);
+
+	if (mbs && sum_qp && sum_qp / mbs <= 51)
+		qp = DIV_ROUND_CLOSEST(sum_qp, mbs);
+	ctx->prc.have[t] = true;
+	ctx->prc.last_qp[t] = qp;
+	ctx->prc.last_bits[t] = bits;
+	ctx->prc.level += (s64)bits - ctx->prc.avg;
+	ctx->prc.level = clamp_t(s64, ctx->prc.level, -(s64)bs / 2, bs);
+
+	if (coda980_prc_log)
+		v4l2_info(&dev->v4l2_dev,
+			  "prc %c target %u bits %u qp %d avg qp %d.%02u level %lld\n",
+			  intra ? 'I' : 'P', ctx->prc.target, bits, ctx->prc.qp,
+			  mbs ? sum_qp / mbs : 0,
+			  mbs ? (sum_qp % mbs) * 100 / mbs : 0,
+			  ctx->prc.level);
+}
+
 static int coda_prepare_encode(struct coda_ctx *ctx)
 {
 	struct coda_q_data *q_data_src, *q_data_dst;
@@ -2165,6 +2367,10 @@ static int coda_prepare_encode(struct coda_ctx *ctx)
 	     q_data_src->fourcc == V4L2_PIX_FMT_NV21))
 		rot_mode |= CODA980_ENC_PIC_CBCR_INTERLEAVE;
 	coda_write(dev, rot_mode, CODA_CMD_ENC_PIC_ROT_MODE);
+	if (coda_is_coda980_h264(ctx) && ctx->prc.on) {
+		coda980_prc_prepare(ctx, force_ipicture || src_buf->sequence == 0);
+		quant_param = ctx->prc.qp;
+	}
 	coda_write(dev, quant_param, CODA_CMD_ENC_PIC_QS);
 
 	if (dev->devtype->product == CODA_960) {
@@ -2263,6 +2469,9 @@ static void coda_finish_encode(struct coda_ctx *ctx)
 		dst_buf->flags |= V4L2_BUF_FLAG_KEYFRAME;
 	else
 		dst_buf->flags |= V4L2_BUF_FLAG_PFRAME;
+	if (coda_is_coda980_h264(ctx) && ctx->prc.on)
+		coda980_prc_finish(ctx, wr_ptr - start_ptr,
+				   dst_buf->flags & V4L2_BUF_FLAG_KEYFRAME);
 	dst_buf->flags |= src_buf->flags & V4L2_BUF_FLAG_LAST;
 
 	v4l2_m2m_buf_copy_metadata(src_buf, dst_buf);
