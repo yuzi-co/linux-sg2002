@@ -233,6 +233,10 @@ The function name to use when creating the function directory is "hid".
 The HID function provides these attributes in its function directory:
 
 	=============== ===========================================
+	keep_latest	if 1, a write never waits for the host:
+			reports wait in order behind the pending
+			one, and only the newest is kept when
+			the host stops reading
 	protocol	HID protocol to use
 	report_desc	data to be used in HID reports, except data
 			passed with /dev/hidg<X>
