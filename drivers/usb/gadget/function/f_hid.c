@@ -25,6 +25,13 @@
 #define HIDG_MINORS	4
 
 /*
+ * keep_latest: reports that may wait behind the one at the controller, and
+ * how long that one may stay there before the host counts as not reading.
+ */
+#define HIDG_LATEST_QUEUE	32
+#define HIDG_LATEST_STALE_MS	100
+
+/*
  * Most operating systems seem to allow for 5000ms timeout, we will allow
  * userspace half that time to respond before we return an empty report.
  */
@@ -82,6 +89,15 @@ struct f_hidg {
 	 */
 	bool				wakeup_on_write;
 
+	/*
+	 * keep_latest - if true, a write never waits for the host. Reports
+	 *               written while another is with the controller wait in
+	 *               a queue, in order; a full queue, or a host that has
+	 *               not read for HIDG_LATEST_STALE_MS, keeps only the
+	 *               newest, so the host always ends with the newest one.
+	 */
+	bool				keep_latest;
+
 	/* recv report */
 	spinlock_t			read_spinlock;
 	wait_queue_head_t		read_queue;
@@ -98,6 +114,12 @@ struct f_hidg {
 	bool				write_pending;
 	wait_queue_head_t		write_queue;
 	struct usb_request		*req;
+	/* send report - keep_latest only */
+	char				*queue_buf;
+	unsigned short			queue_len[HIDG_LATEST_QUEUE];
+	unsigned int			queue_head;
+	unsigned int			queue_count;
+	unsigned long			in_since;
 
 	/* get report */
 	struct usb_request		*get_req;
@@ -131,6 +153,7 @@ static void hidg_release(struct device *dev)
 
 	kfree(hidg->report_desc);
 	kfree(hidg->set_report_buf);
+	kfree(hidg->queue_buf);
 	kfree(hidg);
 }
 
@@ -439,20 +462,141 @@ static ssize_t f_hidg_read(struct file *file, char __user *buffer,
 		return f_hidg_ssreport_read(file, buffer, count, ptr);
 }
 
+/*
+ * Queue the IN request, with write_pending already set. If that fails, the
+ * request goes back to the writers, unless the function was disabled after
+ * write_pending was set: hidg_disable() then left the request alone, and it
+ * is freed here.
+ */
+static int f_hidg_queue_in(struct f_hidg *hidg, struct usb_request *req)
+{
+	unsigned long flags;
+	int status = -ESHUTDOWN;
+
+	if (hidg->in_ep->enabled)
+		status = usb_ep_queue(hidg->in_ep, req, GFP_ATOMIC);
+	if (status >= 0)
+		return 0;
+
+	spin_lock_irqsave(&hidg->write_spinlock, flags);
+	if (hidg->req == req) {
+		hidg->write_pending = 0;
+		hidg->queue_count = 0;
+	} else {
+		free_ep_req(hidg->in_ep, req);
+	}
+	spin_unlock_irqrestore(&hidg->write_spinlock, flags);
+	wake_up(&hidg->write_queue);
+
+	return status;
+}
+
 static void f_hidg_req_complete(struct usb_ep *ep, struct usb_request *req)
 {
 	struct f_hidg *hidg = (struct f_hidg *)ep->driver_data;
+	bool stopped = req->status == -ECONNRESET ||
+		       req->status == -ESHUTDOWN;
 	unsigned long flags;
 
-	if (req->status != 0) {
+	if (req->status != 0 && !(hidg->keep_latest && stopped)) {
 		ERROR(hidg->func.config->cdev,
 			"End Point Request ERROR: %d\n", req->status);
 	}
 
 	spin_lock_irqsave(&hidg->write_spinlock, flags);
+	/*
+	 * keep_latest: the oldest report waiting behind this one goes out
+	 * next, unless the endpoint is going away.
+	 */
+	if (hidg->queue_count && hidg->req == req && !stopped) {
+		unsigned int i = hidg->queue_head;
+
+		memcpy(req->buf, hidg->queue_buf + i * hidg->report_length,
+		       hidg->queue_len[i]);
+		req->status = 0;
+		req->length = hidg->queue_len[i];
+		hidg->queue_head = (i + 1) % HIDG_LATEST_QUEUE;
+		hidg->queue_count--;
+		hidg->in_since = jiffies;
+		spin_unlock_irqrestore(&hidg->write_spinlock, flags);
+
+		f_hidg_queue_in(hidg, req);
+		return;
+	}
+	hidg->queue_count = 0;
 	hidg->write_pending = 0;
 	spin_unlock_irqrestore(&hidg->write_spinlock, flags);
 	wake_up(&hidg->write_queue);
+}
+
+/*
+ * keep_latest: the write never waits. With no report at the controller this
+ * one is queued to it; otherwise it joins the reports waiting for that one to
+ * complete. While the host reads, they go out in order, so a press and its
+ * release written back to back both reach it. When the queue is full, the
+ * newest report replaces the last one in it. When the report at the
+ * controller has waited HIDG_LATEST_STALE_MS, the host is not reading (busy,
+ * suspended, or a firmware that polls slowly), and the queue is cut to the
+ * newest report alone. Either way the host ends on the newest report, never
+ * on a key press whose release was dropped.
+ */
+static ssize_t f_hidg_write_latest(struct f_hidg *hidg,
+				   const char __user *buffer, size_t count)
+{
+	struct usb_request *req;
+	unsigned long flags;
+	void *data;
+	int status;
+
+	count = min_t(size_t, count, hidg->report_length);
+	data = memdup_user(buffer, count);
+	if (IS_ERR(data))
+		return PTR_ERR(data);
+
+	spin_lock_irqsave(&hidg->write_spinlock, flags);
+
+	req = hidg->req;
+	if (!req) {
+		spin_unlock_irqrestore(&hidg->write_spinlock, flags);
+		kfree(data);
+		return -ESHUTDOWN;
+	}
+
+	if (hidg->write_pending) {
+		unsigned int i;
+
+		if (time_after_eq(jiffies, hidg->in_since +
+				  msecs_to_jiffies(HIDG_LATEST_STALE_MS)))
+			hidg->queue_count = 0;
+		if (hidg->queue_count == HIDG_LATEST_QUEUE) {
+			i = (hidg->queue_head + HIDG_LATEST_QUEUE - 1) %
+			    HIDG_LATEST_QUEUE;
+		} else {
+			i = (hidg->queue_head + hidg->queue_count) %
+			    HIDG_LATEST_QUEUE;
+			hidg->queue_count++;
+		}
+		memcpy(hidg->queue_buf + i * hidg->report_length, data, count);
+		hidg->queue_len[i] = count;
+		spin_unlock_irqrestore(&hidg->write_spinlock, flags);
+		kfree(data);
+		return count;
+	}
+
+	hidg->write_pending = 1;
+	hidg->in_since = jiffies;
+	memcpy(req->buf, data, count);
+	req->status   = 0;
+	req->zero     = 1;
+	req->length   = count;
+	req->complete = f_hidg_req_complete;
+	req->context  = hidg;
+
+	spin_unlock_irqrestore(&hidg->write_spinlock, flags);
+	kfree(data);
+
+	status = f_hidg_queue_in(hidg, req);
+	return status < 0 ? status : count;
 }
 
 static ssize_t f_hidg_write(struct file *file, const char __user *buffer,
@@ -471,6 +615,9 @@ static ssize_t f_hidg_write(struct file *file, const char __user *buffer,
 	 */
 	if (hidg->wakeup_on_write && hidg->func.config)
 		usb_gadget_wakeup(hidg->func.config->cdev->gadget);
+
+	if (hidg->keep_latest)
+		return f_hidg_write_latest(hidg, buffer, count);
 
 	spin_lock_irqsave(&hidg->write_spinlock, flags);
 
@@ -735,7 +882,7 @@ static __poll_t f_hidg_poll(struct file *file, poll_table *wait)
 	poll_wait(file, &hidg->get_queue, wait);
 	poll_wait(file, &hidg->get_id_queue, wait);
 
-	if (WRITE_COND)
+	if (WRITE_COND || (hidg->keep_latest && hidg->req))
 		ret |= EPOLLOUT | EPOLLWRNORM;
 
 	if (hidg->use_out_ep) {
@@ -1032,6 +1179,7 @@ static void hidg_disable(struct usb_function *f)
 	}
 
 	hidg->req = NULL;
+	hidg->queue_count = 0;
 	spin_unlock_irqrestore(&hidg->write_spinlock, flags);
 }
 
@@ -1398,6 +1546,7 @@ F_HID_OPT(subclass, 8, 255);
 F_HID_OPT(protocol, 8, 255);
 F_HID_OPT(no_out_endpoint, 8, 1);
 F_HID_OPT(wakeup_on_write, 8, 1);
+F_HID_OPT(keep_latest, 8, 1);
 F_HID_OPT(report_length, 16, 65535);
 
 static ssize_t f_hid_opts_report_desc_show(struct config_item *item, char *page)
@@ -1506,6 +1655,7 @@ static struct configfs_attribute *hid_attrs[] = {
 	&f_hid_opts_attr_protocol,
 	&f_hid_opts_attr_no_out_endpoint,
 	&f_hid_opts_attr_wakeup_on_write,
+	&f_hid_opts_attr_keep_latest,
 	&f_hid_opts_attr_report_length,
 	&f_hid_opts_attr_interval,
 	&f_hid_opts_attr_report_desc,
@@ -1659,6 +1809,15 @@ static struct usb_function *hidg_alloc(struct usb_function_instance *fi)
 	}
 	hidg->use_out_ep = !opts->no_out_endpoint;
 	hidg->wakeup_on_write = opts->wakeup_on_write;
+	hidg->keep_latest = opts->keep_latest;
+	if (hidg->keep_latest) {
+		hidg->queue_buf = kcalloc(HIDG_LATEST_QUEUE,
+					  hidg->report_length, GFP_KERNEL);
+		if (!hidg->queue_buf) {
+			ret = -ENOMEM;
+			goto err_put_device;
+		}
+	}
 
 	++opts->refcnt;
 	mutex_unlock(&opts->lock);
