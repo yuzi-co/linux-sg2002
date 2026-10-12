@@ -5,6 +5,10 @@ Description:
 		The attributes:
 
 		=============	============================================
+		keep_latest	if 1, a write never waits for the host;
+				reports wait in order behind the
+				pending one, and only the newest is
+				kept when the host stops reading
 		protocol	HID protocol to use
 		report_desc	blob corresponding to HID report descriptors
 				except the data passed through /dev/hidg<N>
