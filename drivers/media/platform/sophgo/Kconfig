@@ -28,3 +28,16 @@ config VIDEO_SOPHGO_SG2002_VPSS
 	help
 	  Support the VIP scaler/CSC block ("VPSS") in the Sophgo SG2002/CV181x
 	  video subsystem as a memory-to-memory device: packed or semiplanar
+
+config VIDEO_SOPHGO_SG2002_VIDEO_CLK
+	bool "Sophgo SG2002 video clock profile"
+	depends on ARCH_SOPHGO || COMPILE_TEST
+	depends on COMMON_CLK
+	depends on OF
+	default ARCH_SOPHGO
+	help
+	  Choose the rates of the SG2002's codec core, VPSS and codec bus
+	  clocks at run time, through the sg2002_video_clk.profile parameter:
+	  standard (396, 300 and 360 MHz) or fast (594, 396 and 450 MHz). A
+	  clock changes only while no block uses it, so the choice takes
+	  effect when the video next starts.
