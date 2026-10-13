@@ -1,0 +1,119 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * NanoKVM alpha. Built from Sipeed's scripts only; no alpha board has run
+ * it. The OLED sits at 0x3d on the I2C1 controller (pads SD1_D3 and SD1_D0,
+ * function 2), with its reset on PWR GPIO 19 (pad SD1_D2). EMMC_DAT3 is
+ * the reset button line here, not the SDA of a bit-banged bus, so the
+ * i2c-gpio bus of beta and pcie must not exist.
+ *
+ * The video front end is left off. Sipeed's S02config puts MIPI RX 4N on
+ * MCLK0 on alpha, so lane 4 is not a data lane, and the lane map in the
+ * PCIe fragment does not hold. Which bridge alpha carries, and how it is
+ * wired, is not known here.
+ *
+ * Vendor sysfs number to chip and offset (bases as in
+ * nanokvm-beta-pcie.dtsi):
+ *
+ *   power        503 = porta 23   (pad EMMC_CMD)
+ *   led-power    504 = porta 24   (pad EMMC_DAT1)
+ *   led-hdd      505 = porta 25   (pad EMMC_DAT0)
+ *   wifi-enable  506 = porta 26   (pad EMMC_DAT2)
+ *   reset        507 = porta 27   (pad EMMC_DAT3)
+ *   oled-reset   371 = porte 19   (pad SD1_D2), on gpio@5021000
+ */
+
+/delete-node/ &oled_i2c;
+
+/ {
+	model = "Sipeed NanoKVM alpha";
+	compatible = "sipeed,nanokvm-alpha", "sipeed,licheerv-nano-b",
+		     "sipeed,licheerv-nano", "sophgo,sg2002";
+
+	aliases {
+		gpio4 = &gpio4;
+	};
+};
+
+&{/soc} {
+	/*
+	 * The always-on domain's GPIO block. Linux 7.2's SoC DT does not
+	 * describe it. Address and interrupt from the vendor DT: PLIC source
+	 * 70, which mainline numbers SOC_PERIPHERAL_IRQ(54), as vendor 60 is
+	 * porta's SOC_PERIPHERAL_IRQ(44).
+	 */
+	gpio4: gpio@5021000 {
+		compatible = "snps,dw-apb-gpio";
+		reg = <0x05021000 0x1000>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		porte: gpio-controller@0 {
+			compatible = "snps,dw-apb-gpio-port";
+			gpio-controller;
+			#gpio-cells = <2>;
+			ngpios = <32>;
+			reg = <0>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			interrupts = <SOC_PERIPHERAL_IRQ(54) IRQ_TYPE_LEVEL_HIGH>;
+			gpio-line-names =
+				"", "", "", "", "", "", "", "",		/*  0- 7 */
+				"", "", "", "", "", "", "", "",		/*  8-15 */
+				"", "", "", "oled-reset";		/* 16-19 */
+		};
+	};
+};
+
+&pinctrl {
+	pinctrl-0 = <&board_lines_cfg &oled_reset_cfg &wifi_pwr_cfg>;
+	pinctrl-names = "default";
+
+	board_lines_cfg: board-lines-cfg {
+		board-lines-pins {
+			pinmux = <PINMUX(PIN_EMMC_CMD, 3)>,
+				 <PINMUX(PIN_EMMC_DAT1, 3)>,
+				 <PINMUX(PIN_EMMC_DAT0, 3)>,
+				 <PINMUX(PIN_EMMC_DAT3, 3)>;
+			power-source = <3300>;
+		};
+	};
+
+	oled_reset_cfg: oled-reset-cfg {
+		oled-reset-pins {
+			pinmux = <PINMUX(PIN_SD1_D2, 3)>;
+			power-source = <3300>;
+		};
+	};
+
+	i2c1_cfg: i2c1-cfg {
+		i2c1-pins {
+			pinmux = <PINMUX(PIN_SD1_D3, 2)>,
+				 <PINMUX(PIN_SD1_D0, 2)>;
+			bias-pull-up;
+			power-source = <3300>;
+		};
+	};
+};
+
+&i2c1 {
+	pinctrl-0 = <&i2c1_cfg>;
+	pinctrl-names = "default";
+	clock-frequency = <100000>;
+	status = "okay";
+};
+
+&hdmi_bridge {
+	status = "disabled";
+};
+
+&csi_capture {
+	status = "disabled";
+};
+
+&porta {
+	gpio-line-names =
+		"", "", "", "", "", "", "", "",				/*  0- 7 */
+		"", "", "", "", "", "", "", "",				/*  8-15 */
+		"", "", "", "", "", "", "", "power",			/* 16-23 */
+		"led-power", "led-hdd", "wifi-enable", "reset";		/* 24-27 */
+};
