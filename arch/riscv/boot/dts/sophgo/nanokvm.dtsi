@@ -1,0 +1,215 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * What every NanoKVM variant adds to nixos-nanokvm's PCIe DT.
+ *
+ * sg2002-nanokvm-<variant>.dts includes, in this order: the upstream
+ * LicheeRV Nano B DTS, nixos-nanokvm's B-W, NanoKVM-PCIe, no-Wi-Fi and
+ * cpufreq fragments, this file, and one variant file (nanokvm-alpha, -beta
+ * or -pcie). Later nodes override earlier ones, so this file and the
+ * variant file win.
+ *
+ * Not here on purpose: an OpenSBI reservation. Sipeed's firmware adds
+ * mmode_resv0@80000000 to the DT it hands on (trial 1, 2026-10-01).
+ */
+
+#include <dt-bindings/clock/sophgo,cv1800.h>
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+
+/ {
+	/*
+	 * i2c-dev numbers follow these aliases, and IronKVM opens buses by the
+	 * vendor kernel's numbers: the alpha OLED on /dev/i2c-1, the beta and
+	 * pcie OLED on /dev/i2c-5, the HDMI bridge on /dev/i2c-4. Disabled
+	 * controllers keep their alias, so the numbers do not shift. The
+	 * variant files add i2c5 where the board has the bit-banged bus.
+	 *
+	 * ethernet0 is the node U-Boot's ethaddr fixup writes
+	 * local-mac-address into. Sipeed's U-Boot sets no ethaddr today.
+	 * nixos-nanokvm's efuse@3050000 (their patches 0083 and 0085, since
+	 * ab38b7d8) gives gmac0 Sipeed's MAC from the eFuse UID through an
+	 * nvmem cell, and slot-b/S10uuid sets the same address from user
+	 * space, reading the UID from the sg2002-efuse0 nvmem device.
+	 */
+	aliases {
+		ethernet0 = &gmac0;
+		i2c0 = &i2c0;
+		i2c1 = &i2c1;
+		i2c2 = &i2c2;
+		i2c3 = &i2c3;
+		i2c4 = &i2c4;
+		mmc0 = &sdhci0;
+	};
+
+	/*
+	 * Trial 41 (#80): pstore's RAM backend. The kernel keeps its console
+	 * log (64 KB), panic and oops records (three of 16 KB) and /dev/pmsg0
+	 * (16 KB) here, uncached, and reads them back from
+	 * /sys/fs/pstore after a reset. Trial 41 found the console log and a
+	 * pmsg line intact after a watchdog reset and a boot through the
+	 * firmware and U-Boot back into the same slot. The region sits
+	 * just below the video pool: clear of what the firmware and U-Boot
+	 * use at the start of DRAM (OpenSBI, U-Boot before relocation, the
+	 * kernel at 0x80200000, the FIT at 0x81800000, uEnv.txt's scratch at
+	 * 0x83000000) and of U-Boot's relocated copy at the top.
+	 */
+	reserved-memory {
+		ramoops@867e0000 {
+			compatible = "ramoops";
+			reg = <0x867e0000 0x20000>;
+			no-map;
+			record-size = <0x4000>;
+			console-size = <0x10000>;
+			pmsg-size = <0x4000>;
+		};
+	};
+};
+
+/*
+ * Trial 77: the video pool (nixos-nanokvm's sg2002-nanokvm-pcie.dtsi, a
+ * 32 MiB no-map carveout) at 28 MiB, still no-map. With patch 0940's
+ * exact-size allocations the capture, the Coda980 and the WAVE420L peak at
+ * 24,388 KiB at 1080p and 24,820 KiB at 1920x1200 (H.265 through the
+ * scaler), so 28 MiB leaves at least 3.8 MiB; the 4 MiB above 0x88400000
+ * go back to the page allocator. A reusable CMA area (pages lent to the
+ * page allocator while no stream holds them) worked too, but under anonymous
+ * memory pressure it made the H.264 stream's first frame about 200 ms slower
+ * (run sheet, trial 77).
+ */
+&video_pool {
+	reg = <0x86800000 0x1c00000>;
+};
+
+/*
+ * The C906 implements the T-Head 0.7.1 vector extension with 128-bit
+ * registers. Linux 7.2 uses it only with RISCV_ISA_V and
+ * RISCV_ISA_XTHEADVECTOR built in, and then turns it off again unless
+ * ERRATA_THEAD_GHOSTWRITE is off or the kernel boots with mitigations=off,
+ * because it treats every C9xx core as open to GhostWrite. The step 1
+ * kernel has RISCV_ISA_V off, as nixos-nanokvm's config.nix sets it: their
+ * kernel with the vector stack on hung at boot in the vector
+ * unaligned-access probe. So this changes nothing on that kernel; turning
+ * vector on is a kernel config trial of its own.
+ */
+&cpu0 {
+	riscv,isa-extensions = "i", "m", "a", "f", "d", "c", "zicntr", "zicsr",
+			       "zifencei", "zihpm", "xtheadvector";
+	thead,vlenb = <16>;
+};
+
+/*
+ * Trial 82 (#97): the video clocks at the vendor's VC-overdrive rates, at the
+ * stock core voltage and with no PLL change, as NanoKVM-OS PR 57 runs them:
+ * the codec core (vc_src0, the Coda980, the WAVE420L and the JPEG unit) at
+ * DISPPLL / 2, the VPSS (src_vip_sys_1) at DISPPLL / 3, the codec bus
+ * (axi_video_codec) at MIPIMPLL / 2. nixos-nanokvm's patch 0071 makes the
+ * bypass mux program the parent it is given. assigned-clocks replaces the
+ * cpufreq fragment's list, so its MPLL entry is repeated first.
+ *
+ * Trial 89 (#135): these are the boot rates. The video-clock node below
+ * lets the owner switch the three clocks back to the firmware's (standard)
+ * at run time, through patch 0949's sg2002_video_clk.profile.
+ */
+&clk {
+	assigned-clocks = <&clk CLK_MPLL>,
+			  <&clk CLK_VC_SRC0>,
+			  <&clk CLK_SRC_VIP_SYS_1>,
+			  <&clk CLK_AXI_VIDEO_CODEC>;
+	assigned-clock-parents = <0>,
+				 <&clk CLK_DISPPLL>,
+				 <&clk CLK_DISPPLL>,
+				 <&clk CLK_MIPIMPLL>;
+	assigned-clock-rates = <1000000000>,
+			       <594000000>,
+			       <396000000>,
+			       <450000000>;
+};
+
+/*
+ * Trial 89 (#135): the clocks patch 0949's profile sets, standard or fast.
+ * It holds them without enabling them, and changes a rate only while no
+ * video block has its clock prepared.
+ */
+/ {
+	video-clock {
+		compatible = "sophgo,sg2002-video-clock";
+		clocks = <&clk CLK_VC_SRC0>,
+			 <&clk CLK_SRC_VIP_SYS_1>,
+			 <&clk CLK_AXI_VIDEO_CODEC>;
+		clock-names = "vc-src0", "vip-sys1", "axi-video-codec";
+	};
+};
+
+/* Nano B's upstream DT says host; the KVM is a gadget. */
+&usb {
+	dr_mode = "peripheral";
+};
+
+&{/soc} {
+	/*
+	 * The Chips&Media WAVE420L H.265 encoder (patches 0906, 0913 and 0914,
+	 * #55). Vendor DT: reg "h265" at 0x0b020000, PLIC interrupt 22
+	 * (SOC_PERIPHERAL_IRQ(6); the Coda980's vendor 21 is (5)), read from
+	 * slot A's /proc/device-tree/vcodec. vc-ctrl is the block the Coda980
+	 * node already requests; the driver maps it without a request and
+	 * writes only the SRAM share register, through the arbiter. The clocks
+	 * are listed in the vendor's enable order, which turns the H.264
+	 * core's clocks on too: without them the firmware boots and takes
+	 * every setup command, but ENC_PIC never ends (trial 13). All seven
+	 * must be on before any register access: a read with them gated hangs
+	 * the SoC.
+	 */
+	h265: video-codec@b020000 {
+		compatible = "sophgo,sg2002-wave420l";
+		reg = <0x0b020000 0x10000>, <0x0b030000 0x100>;
+		reg-names = "wave", "vc-ctrl";
+		interrupts = <SOC_PERIPHERAL_IRQ(6) IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&clk CLK_VC_SRC0>,
+			 <&clk CLK_CFG_REG_VC>,
+			 <&clk CLK_AXI_VIDEO_CODEC>,
+			 <&clk CLK_H264C>,
+			 <&clk CLK_APB_H264C>,
+			 <&clk CLK_H265C>,
+			 <&clk CLK_APB_H265C>;
+		clock-names = "vc-src0", "cfg-reg-vc", "axi-video-codec",
+			      "h264c", "apb-h264c", "h265c", "apb-h265c";
+		resets = <&rst RST_H265C>;
+		firmware-name = "sophgo/sg2002/monet.bin";
+		/* The Coda980's pool: CMA is too small for the frame buffers. */
+		memory-region = <&video_pool>;
+	};
+
+	/*
+	 * The Chips&Media JPEG unit, for the encoder of patch 0907 (#36).
+	 * Vendor DT: reg "jpeg" at 0x0b000000, size 0x300, reset RST_JPEG,
+	 * PLIC interrupt 20 level high, named "jpeg" (read from the 5.10 DT
+	 * on slot A; the source dtsi carries it in a separate file). That is
+	 * SOC_PERIPHERAL_IRQ(4), below the Coda980's 21 and the WAVE420L's
+	 * 22. The unit needs neither vc_ctrl nor firmware. Clocks in the vendor JPEG driver's enable order; all
+	 * five must be on before any register access.
+	 */
+	jpeg: jpeg-codec@b000000 {
+		compatible = "sophgo,sg2002-jpeg";
+		reg = <0x0b000000 0x300>;
+		interrupts = <SOC_PERIPHERAL_IRQ(4) IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&clk CLK_JPEG>,
+			 <&clk CLK_APB_JPEG>,
+			 <&clk CLK_VC_SRC0>,
+			 <&clk CLK_CFG_REG_VC>,
+			 <&clk CLK_AXI_VIDEO_CODEC>;
+		clock-names = "jpeg", "apb-jpeg", "vc-src0", "cfg-reg-vc",
+			      "axi-video-codec";
+		resets = <&rst RST_JPEG>;
+	};
+};
+
+/*
+ * The panel stays a plain I2C device. IronKVM drives it through i2c-dev,
+ * and a bound ssd1307fb would take the address and leave it busy. The node
+ * stays, disabled, to say what is on the bus.
+ */
+&oled_i2c {
+	oled@3c {
+		status = "disabled";
+	};
+};
