@@ -42,6 +42,7 @@
 #include "coda.h"
 #include "imx-vdoa.h"
 #include "../sg2002-vc-sram/sg2002-vc-sram.h"
+#include "../../sophgo/sg2002-video-clk.h"
 
 #define CODA_NAME		"coda"
 
@@ -2170,6 +2171,9 @@ static int coda_start_streaming(struct vb2_queue *q, unsigned int count)
 	INIT_LIST_HEAD(&list);
 
 	if (ctx->dev->devtype->clocks_while_streaming) {
+		/* A video clock profile chosen since the last stream. */
+		if (!ctx->clocks_held)
+			sg2002_video_clk_apply();
 		ret = coda_clocks_hold(ctx);
 		if (ret)
 			goto err;

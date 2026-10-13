@@ -60,6 +60,7 @@
 #include <media/videobuf2-dma-contig.h>
 
 #include "../sg2002-vc-sram/sg2002-vc-sram.h"
+#include "../../sophgo/sg2002-video-clk.h"
 
 #define W4_NAME				"wave420l"
 
@@ -707,6 +708,8 @@ static int w4_power_on(struct w4_dev *w4)
 {
 	int ret;
 
+	/* A video clock profile chosen since the last stream. */
+	sg2002_video_clk_apply();
 	ret = clk_bulk_prepare_enable(ARRAY_SIZE(w4->clks), w4->clks);
 	if (ret)
 		return ret;

@@ -41,6 +41,7 @@
 #include <media/videobuf2-v4l2.h>
 
 #include "sg2002-isp.h"
+#include "sg2002-video-clk.h"
 
 #define SG2002_DRV_NAME		"sg2002-capture"
 
@@ -1131,6 +1132,8 @@ static int sg2002_start_streaming(struct vb2_queue *q, unsigned int count)
 		goto err_buffers;
 	cap->pipeline_started = true;
 
+	/* A video clock profile chosen since the last stream. */
+	sg2002_video_clk_apply();
 	ret = clk_bulk_prepare_enable(cap->num_clks, cap->clks);
 	if (ret)
 		goto err_stop;
