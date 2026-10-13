@@ -36,6 +36,8 @@
 #include <media/v4l2-mem2mem.h>
 #include <media/videobuf2-dma-contig.h>
 
+#include "sg2002-video-clk.h"
+
 #define DRIVER_NAME	"sg2002-vpss"
 
 /* ---- SC_TOP (base + 0x0000) ---- */
@@ -1069,6 +1071,8 @@ static int vpss_runtime_resume(struct device *dev)
 	struct vpss_dev *vpss = dev_get_drvdata(dev);
 	int ret;
 
+	/* A video clock profile chosen since the last stream. */
+	sg2002_video_clk_apply();
 	clk_prepare_enable(vpss->clk_axi);
 	clk_prepare_enable(vpss->clk_cfg_reg);
 

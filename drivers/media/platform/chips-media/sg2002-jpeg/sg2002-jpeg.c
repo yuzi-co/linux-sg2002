@@ -46,6 +46,8 @@
 #include <media/v4l2-mem2mem.h>
 #include <media/videobuf2-dma-contig.h>
 
+#include "../../sophgo/sg2002-video-clk.h"
+
 #define SG_JPEG_NAME			"sg2002-jpeg"
 
 /* Picture control */
@@ -526,6 +528,8 @@ static int sg_jpeg_power_on(struct sg_jpeg_dev *jpeg)
 {
 	int ret;
 
+	/* A video clock profile chosen since the last stream. */
+	sg2002_video_clk_apply();
 	ret = clk_bulk_prepare_enable(ARRAY_SIZE(jpeg->clks), jpeg->clks);
 	if (ret)
 		return ret;
