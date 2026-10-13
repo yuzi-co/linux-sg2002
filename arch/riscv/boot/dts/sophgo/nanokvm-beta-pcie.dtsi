@@ -1,0 +1,109 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * The lines beta and pcie share. Sipeed's S15kvmhwd sets up both boards
+ * with one function, and devices/sipeed-nanokvm/pins/{beta,pcie} on main
+ * declare the same lines. Each name below is the function name in those
+ * files, so a reader can find a line by name with libgpiod.
+ *
+ * Vendor sysfs number to chip and offset: the 5.10 kernel numbers the
+ * five DesignWare GPIO blocks downward from 511 in steps of 32
+ * (gpio@3020000 480-511, gpio@3021000 448-479, gpio@3022000 416-447,
+ * gpio@3023000 384-415, gpio@5021000 352-383). So:
+ *
+ *   power        503 = porta 23   (pad EMMC_CMD)
+ *   led-power    504 = porta 24   (pad EMMC_DAT1)
+ *   reset        505 = porta 25   (pad EMMC_DAT0)
+ *   wifi-enable  506 = porta 26   (pad EMMC_DAT2)
+ *   oled-reset   502 = porta 22   (pad EMMC_CLK)
+ *   hdmi-reset   451 = portb 3    (pad ADC1)
+ *
+ * Linux 7.2 gives sysfs numbers from 512 upward in probe order, which is
+ * not a contract; the names are.
+ */
+
+/ {
+	aliases {
+		i2c5 = &oled_i2c;
+	};
+};
+
+&pinctrl {
+	/*
+	 * Hogged by the pin controller itself, so the pads are GPIOs before
+	 * anything asks for the lines. Sipeed's 10-variant-pins writes the
+	 * same values with devmem. The OLED bus and its reset (porta 15, 27
+	 * and 22) are muxed by oled_i2c_cfg, and the Wi-Fi enable pad by
+	 * wifi_pwr_cfg, both from the NanoKVM-PCIe fragment.
+	 */
+	pinctrl-0 = <&board_lines_cfg &wifi_pwr_cfg>;
+	pinctrl-names = "default";
+
+	board_lines_cfg: board-lines-cfg {
+		board-lines-pins {
+			pinmux = <PINMUX(PIN_EMMC_CMD, 3)>,
+				 <PINMUX(PIN_EMMC_DAT1, 3)>,
+				 <PINMUX(PIN_EMMC_DAT0, 3)>;
+			power-source = <3300>;
+		};
+	};
+
+	/*
+	 * The MIPI RX pads on function 3, the value the vendor kernel leaves
+	 * in 0x0300116C..0x03001190 while it captures. Sipeed's S02config puts
+	 * MIPI RX 0N (0x0300118C) on function 5, MCLK1, on a beta board; the
+	 * mainline CSI receiver does not re-mux it as the vendor CIF driver
+	 * does, and with MCLK1 every packet fails ECC and CRC (trial 1). A
+	 * mainline slot does not run S02config (#61), so this group is the
+	 * only writer of these pads.
+	 *
+	 * RX4N, RX4P, RX3N and RX3P are left out. They have a second mux
+	 * register, and pinctrl-cv18xx accepts such a pin only with its first
+	 * mux equal to mux2.pfunc, which pinctrl-sg2002 never sets. Any
+	 * function 3 entry for them makes the whole group invalid, and the
+	 * capture device then never probes (trial 5). They keep the state
+	 * they have after reset, and capture works with it (trial 16, without
+	 * S02config): RX4N and RX4P read mux 0, RX3N and RX3P mux 3, all four
+	 * mux2 3. S02config used to set RX4N to 3 on beta; it makes no
+	 * difference to the receiver.
+	 */
+	csi_pins_cfg: csi-pins-cfg {
+		mipi-rx-pins {
+			pinmux = <PINMUX(PIN_MIPIRX2N, 3)>,
+				 <PINMUX(PIN_MIPIRX2P, 3)>,
+				 <PINMUX(PIN_MIPIRX1N, 3)>,
+				 <PINMUX(PIN_MIPIRX1P, 3)>,
+				 <PINMUX(PIN_MIPIRX0N, 3)>,
+				 <PINMUX(PIN_MIPIRX0P, 3)>;
+			power-source = <1800>;
+		};
+	};
+
+	/*
+	 * The PCIe fragment muxes PWR_SEQ1 for the bridge reset, but
+	 * portb 3 is the ADC1 pad's GPIO function. Both read 3 on the vendor
+	 * kernel, so both are set.
+	 */
+	hdmi-reset-cfg {
+		hdmi-reset-gpio-pins {
+			pinmux = <PINMUX(PIN_ADC1, 3)>;
+			power-source = <1800>;
+		};
+	};
+};
+
+&csi_capture {
+	pinctrl-0 = <&csi_pins_cfg>;
+	pinctrl-names = "default";
+};
+
+&porta {
+	gpio-line-names =
+		"", "", "", "", "", "", "", "",				/*  0- 7 */
+		"", "", "", "", "", "", "", "oled-i2c-scl",		/*  8-15 */
+		"", "", "", "", "", "", "oled-reset", "power",		/* 16-23 */
+		"led-power", "reset", "wifi-enable", "oled-i2c-sda";	/* 24-27 */
+};
+
+&portb {
+	gpio-line-names = "", "", "", "hdmi-reset";
+};

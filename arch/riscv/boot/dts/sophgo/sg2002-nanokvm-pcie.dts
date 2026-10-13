@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * Sipeed NanoKVM-PCIe, as IronKVM builds it: the LicheeRV Nano B DTS, nixos-nanokvm's
+ * B-W, NanoKVM-PCIe, no-Wi-Fi and cpufreq fragments, nanokvm.dtsi and
+ * nanokvm-pcie.dtsi, in that order. dtc merges the nodes, so later files win.
+ *
+ * IronKVM compiles this file with cpp and dtc over the sophgo DT sources
+ * of the base release tag (v7.2.9), not of this branch: some patches of
+ * the series add to sg2002.dtsi what the fragments also describe. Built
+ * here by "make dtbs" it describes the same hardware, with the nodes in
+ * another order and other phandle numbers. See README.ironkvm.
+ */
+
+#include "sg2002-licheerv-nano-b.dts"
+#include "sg2002-licheerv-nano-bw.dtsi"
+#include "sg2002-nanokvm-pcie.dtsi"
+#include "sg2002-licheerv-nano-bw-nowifi.dtsi"
+#include "sg2002-cpufreq.dtsi"
+#include "nanokvm.dtsi"
+#include "nanokvm-pcie.dtsi"
