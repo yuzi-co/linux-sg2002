@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * NanoKVM-PCIe: the OLED answers at 0x3c on bus 5, and the capture library
+ * toggles the bridge reset (portb 3) around HDMI stop and start. On
+ * mainline the lt6911 driver owns that line through reset-gpios.
+ */
+
+#include "nanokvm-beta-pcie.dtsi"
+
+/ {
+	model = "Sipeed NanoKVM-PCIe";
+	compatible = "sipeed,nanokvm-pcie", "sipeed,licheerv-nano-b",
+		     "sipeed,licheerv-nano", "sophgo,sg2002";
+};
