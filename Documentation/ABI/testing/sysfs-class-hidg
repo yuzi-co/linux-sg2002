@@ -1,0 +1,13 @@
+What:		/sys/class/hidg/hidg<N>/pending_ms
+Date:		October 2026
+KernelVersion:	7.3
+Contact:	linux-usb@vger.kernel.org
+Description:
+		(RO) How long, in milliseconds, the report at the controller
+		has waited for the host to read it from the interrupt IN
+		endpoint, or 0 when no report is waiting. It stays near the
+		endpoint's polling interval while the host reads, and grows
+		while the host does not: busy, suspended, or without a driver
+		for the interface. With the function's keep_latest option a
+		write never waits for the host, so this is how userspace can
+		tell that the host stopped reading.
