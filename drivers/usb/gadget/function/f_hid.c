@@ -114,12 +114,13 @@ struct f_hidg {
 	bool				write_pending;
 	wait_queue_head_t		write_queue;
 	struct usb_request		*req;
+	/* when the report at the controller was queued to it */
+	unsigned long			in_since;
 	/* send report - keep_latest only */
 	char				*queue_buf;
 	unsigned short			queue_len[HIDG_LATEST_QUEUE];
 	unsigned int			queue_head;
 	unsigned int			queue_count;
-	unsigned long			in_since;
 
 	/* get report */
 	struct usb_request		*get_req;
@@ -156,6 +157,34 @@ static void hidg_release(struct device *dev)
 	kfree(hidg->queue_buf);
 	kfree(hidg);
 }
+
+/*
+ * pending_ms: how long the report at the controller has waited for the host
+ * to read it, 0 when none is waiting. A host that reads the endpoint keeps it
+ * near its polling interval; one that stopped reading lets it grow. Under
+ * keep_latest a write never waits, so this is how userspace can tell.
+ */
+static ssize_t pending_ms_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	struct f_hidg *hidg = container_of(dev, struct f_hidg, dev);
+	unsigned int ms = 0;
+	unsigned long flags;
+
+	spin_lock_irqsave(&hidg->write_spinlock, flags);
+	if (hidg->req && hidg->write_pending)
+		ms = jiffies_to_msecs(jiffies - hidg->in_since);
+	spin_unlock_irqrestore(&hidg->write_spinlock, flags);
+
+	return sysfs_emit(buf, "%u\n", ms);
+}
+static DEVICE_ATTR_RO(pending_ms);
+
+static struct attribute *hidg_attrs[] = {
+	&dev_attr_pending_ms.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(hidg);
 
 /*-------------------------------------------------------------------------*/
 /*                           Static descriptors                            */
@@ -642,6 +671,7 @@ try_again:
 	}
 
 	hidg->write_pending = 1;
+	hidg->in_since = jiffies;
 	req = hidg->req;
 	count  = min_t(unsigned, count, hidg->report_length);
 
@@ -1787,6 +1817,7 @@ static struct usb_function *hidg_alloc(struct usb_function_instance *fi)
 	device_initialize(&hidg->dev);
 	hidg->dev.release = hidg_release;
 	hidg->dev.class = &hidg_class;
+	hidg->dev.groups = hidg_groups;
 	hidg->dev.devt = MKDEV(major, opts->minor);
 	ret = dev_set_name(&hidg->dev, "hidg%d", opts->minor);
 	if (ret)
