@@ -1,0 +1,109 @@
+Linux for the Sophgo SG2002 NanoKVM, as used by IronKVM
+=========================================================
+
+This repository holds the source of the Linux kernels that IronKVM runs on
+the Sipeed NanoKVM (a LicheeRV Nano B with the Sophgo SG2002, one T-Head
+C906 core in use). It is a fork of the stable tree (gregkh/linux) so that
+every IronKVM branch starts from an upstream release tag and adds only its
+own commits. It exists so that the corresponding source of each kernel
+IronKVM ships is public. The work itself happens in ironkvm-dist
+(github.com/yuzi-co/ironkvm-dist); this repository takes no issues.
+
+
+Branches and tags
+-----------------
+
+ironkvm/<x.y>
+    The mainline kernel of IronKVM's second slot (slot B). It starts at the
+    stable release tag the build uses and adds, one commit per patch, the
+    patches in the order the build applies them, then the NanoKVM device
+    trees, then the kernel configurations and this file.
+
+vendor/<x.y>
+    The Sophgo/Sipeed vendor kernel of the first slot (slot A), published
+    for its source only. No new work happens there.
+
+v<x.y.z>-ironkvm.<n>
+    A commit IronKVM builds. <x.y.z> is the upstream release under it and
+    <n> counts the IronKVM releases on that base, from 1. A tag is never
+    moved; a change to the tree gets the next <n>.
+
+
+ironkvm/7.2 at v7.2.9-ironkvm.1
+-------------------------------
+
+On top of v7.2.9:
+
+ 1. 81 patches from George Whewell's nixos-nanokvm
+    (github.com/georgewhewell/nixos-nanokvm) at
+    b5f830aaea42c464b469f6c8d3de73389f66495b, in the order of
+    pkgs/sg2002/linux-mainline/patches.nix: the SG2002 support (clocks,
+    eFuse, TRNG, SD/SDIO, DMA, audio, thermal, PWM, Ethernet PHY), the
+    HDMI-to-CSI bridge (LT6911UXC), the CSI capture, the VPSS scaler and
+    the Coda980 H.264 encoder.
+ 2. 39 patches from ironkvm-dist (socs/sophgo-sg2002/mainline/patches,
+    0902 to 0950): the USB gadget (CD/DVD emulation, wakeup, HID options),
+    the WAVE420L H.265 and the JPEG encoders, Coda980 rate control and
+    memory, the capture and VPSS changes, the C906 vector fixes.
+ 3. The device trees, in arch/riscv/boot/dts/sophgo/: nixos-nanokvm's
+    LicheeRV Nano B-W fragments and the NanoKVM files, composed by
+    sg2002-nanokvm-{alpha,beta,pcie}.dts.
+ 4. ironkvm/configs/: the kernel configurations IronKVM builds.
+ 5. This file.
+
+Each patch keeps the author, date and message of its header. A patch with
+no header names its source in the commit message, with the author and date
+of the nixos-nanokvm commit that added it. Every patch is applied with
+"patch -p1", as nixpkgs applies kernel patches, so the tree at the tag is
+the tree IronKVM built from the patch files before this repository
+existed (without the .orig files that patch leaves where a hunk needed
+fuzz or an offset).
+
+
+How IronKVM builds it
+---------------------
+
+ironkvm-dist's socs/sophgo-sg2002/mainline/flake.nix takes this repository
+as a flake input pinned to the tagged commit (github:yuzi-co/linux-sg2002/
+<commit>); flake.lock holds its narHash, and kernel.pin beside the flake
+names the repository, tag, commit and hash. nixpkgs' buildLinux (the
+nixpkgs that nixos-nanokvm pins) builds the tree with no further patches.
+The configuration is generated there: the riscv defconfig, nixos-nanokvm's
+config.nix and the structured options in flake.nix, completed by
+"make olddefconfig".
+
+ironkvm/configs/ holds the result of that, as the built .config files:
+
+    trial.config      the trial kernel (flake outputs default and
+                      llvm-opt, the same derivation): Clang 22, kCFI,
+                      command line with loglevel=7
+    shipping.config   the shipping kernel: the same except for
+                      CONFIG_CMDLINE (loglevel=4)
+
+The build fails when the .config it generates differs from these files, so
+the published configuration is the one that ships. It sets
+SOURCE_DATE_EPOCH to the commit time of the base tag (v7.2.9: 1791024196),
+the time the files of the kernel.org tarball carry, so the version banner
+and the built-in initramfs are the bytes a build from that tarball gives.
+
+The DTB IronKVM boots is compiled with cpp and dtc from
+sg2002-nanokvm-<variant>.dts, with the sophgo DT sources and include/ of
+the base tag (v7.2.9) standing in for those of this branch, as
+nixos-nanokvm does. Some patches of the series add to sg2002.dtsi nodes
+that the fragments also describe (the Coda980 and the VPSS). "make dtbs"
+on this branch builds the same files over the patched sg2002.dtsi; the
+result describes the same hardware, with the nodes in another order and
+other phandle numbers, and it is not the DTB IronKVM boots.
+
+
+License
+-------
+
+The kernel is licensed under the GNU General Public License version 2
+(COPYING), with the exceptions and other licenses that LICENSES/ and the
+SPDX lines of individual files give. The patches change GPL-2.0 files and
+are distributed under the same terms; the nixos-nanokvm patches carry no
+license notice of their own and are distributed as changes to the kernel
+under GPL-2.0. The device tree files are GPL-2.0 OR MIT where their SPDX
+line says so, and GPL-2.0 otherwise. The configurations in ironkvm/configs/
+are generated by the kernel's Kconfig and are distributed under GPL-2.0.
