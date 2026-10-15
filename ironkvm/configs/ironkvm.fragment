@@ -1,0 +1,221 @@
+# Our changes to the board's kernel configuration, applied after the capture.
+#
+# seed-config.sh appends every line that does not start with #, after the
+# capture and the release string, so a line here wins over the capture.
+#
+# Milestone 0 (KERNEL_TARGET equal to KERNEL_BASE) does not read this file:
+# lib.sh's config_fragment gives it a path that cannot exist, as it does for the
+# kernel patches. Milestone 0 rebuilds the kernel the board runs, and gate A
+# compares its configuration with the capture line by line.
+#
+# == zram and zsmalloc, as modules ==
+#
+# The board swaps to zram. The captured 5.10.4 kernel has CONFIG_ZSMALLOC unset
+# and no CONFIG_ZRAM line, so zram.ko and zsmalloc.ko are built out of tree for
+# 5.10.4-tag- and the image carries them (devices/sipeed-nanokvm/kernel-oot).
+# The vendor kernel ignores vermagic, so those two modules would force-load on
+# 5.10.270 with only a taint. The delivery plan must exclude them. This build
+# makes both modules for 5.10.270-ironkvm0 instead, so the board keeps swap
+# with modules that match the kernel. Decided by the user on 2026-09-23.
+#
+# Modules, not =y: both are self-contained, and neither adds a field to a
+# structure that the prebuilt encoder modules see. docs/plans/STATE-kernel.md,
+# section "zram and zsmalloc", has the configuration diff and the layout gate
+# result. The ZRAM_* sub-options keep the olddefconfig defaults: the default
+# compressor is lzo-rle (CRYPTO_LZO=y is built in), and writeback and memory
+# tracking are off, because S01zram uses neither.
+CONFIG_ZSMALLOC=m
+CONFIG_ZRAM=m
+#
+# == Reboot after a panic ==
+#
+# The board has no console. A panic reboots it after 10 s, so a trial that
+# panics returns to the trusted slot at once, and the return time tells a
+# panic from a stall. docs/plans/2026-09-25-kernel-hang-audit.md has why.
+CONFIG_PANIC_TIMEOUT=10
+#
+# == lz4 and lz4hc, for zram ==
+#
+# zram can use any compressor the kernel has. The capture builds lzo, lzo-rle,
+# zstd and deflate in. These two lines add lz4, the fastest to compress and to
+# read back, and lz4hc, which writes slowly and reads back at lz4 speed. Plan 3
+# task 2 measures every one of them on the board, and S01zram keeps lzo-rle
+# until that measurement picks another. Built in, like the other compressors:
+# neither adds a field to a structure that the prebuilt encoder modules see.
+CONFIG_CRYPTO_LZ4=y
+CONFIG_CRYPTO_LZ4HC=y
+#
+# == What the board does not use, removed ==
+#
+# docs/plans/2026-09-25-kernel-config-audit.md measured each group below and
+# gives the evidence that nothing on the board uses it. A line of the form
+# CONFIG_X=n turns an option off: Kconfig reads n as "not set", and
+# olddefconfig then drops every option that depends on it. The user chose
+# this set on 2026-09-25.
+#
+# Dynamic debug (audit A1). DYNAMIC_DEBUG_CORE stays on, because it exports
+# __dynamic_pr_debug and __dynamic_dev_dbg, and the prebuilt encoder modules
+# import both.
+CONFIG_DYNAMIC_DEBUG=n
+#
+# Raw flash and the network file system (audit A2). The board has no MTD
+# device, and nothing mounts JFFS2, UBIFS or NFS.
+CONFIG_MTD=n
+CONFIG_JFFS2_FS=n
+CONFIG_UBIFS_FS=n
+CONFIG_NFS_FS=n
+#
+# Bluetooth (audit A3). /sys/class/bluetooth is empty, and no variant starts
+# a Bluetooth daemon.
+CONFIG_BT=n
+#
+# Media (audit A4, reduced). The audit removed MEDIA_SUPPORT with everything
+# under it. devices/kernel-requirements holds the media-v4l2 software feature
+# to CONFIG_VIDEO_DEV and CONFIG_USB_VIDEO_CLASS, so a capture dongle keeps
+# working, and gates/check-kernel-config.sh fails without them. Those two
+# stay. What goes is the UVC gadget function, which no gadget configuration
+# builds, and the TV, radio, SDR, CEC and test media drivers.
+CONFIG_USB_CONFIGFS_F_UVC=n
+# The media groups are prompts only while MEDIA_SUPPORT_FILTER is on; without
+# it every group defaults to y and the lines below are ignored.
+CONFIG_MEDIA_SUPPORT_FILTER=y
+CONFIG_MEDIA_CAMERA_SUPPORT=y
+CONFIG_MEDIA_ANALOG_TV_SUPPORT=n
+CONFIG_MEDIA_DIGITAL_TV_SUPPORT=n
+CONFIG_MEDIA_RADIO_SUPPORT=n
+CONFIG_MEDIA_SDR_SUPPORT=n
+CONFIG_MEDIA_TEST_SUPPORT=n
+CONFIG_MEDIA_CEC_SUPPORT=n
+CONFIG_VIDEO_MEM2MEM_DEINTERLACE=n
+#
+# Network extras (audit A5, reduced). WIREGUARD stays: NetBird uses the
+# kernel's WireGuard when it exists (issue #1 in yuzi-co/ironkvm-dist). So do
+# conntrack, NAT and MASQUERADE, the marks, nftables, iptables-nft, TUN and
+# policy routing, which Tailscale's rules and NetBird's use. What goes is
+# VXLAN, the IPv6 tunnel, IPVS, the flow table, the conntrack helpers
+# (nf_conntrack_helper is 0, so none is ever attached), and the SYNPROXY,
+# TPROXY, TEE, OSF, CLUSTERIP, LED and IPVS matches and targets. veth went
+# here too, and came back for containers: see the last section.
+CONFIG_VXLAN=n
+CONFIG_IPV6_TUNNEL=n
+CONFIG_IP_VS=n
+CONFIG_NF_FLOW_TABLE=n
+CONFIG_NF_CONNTRACK_AMANDA=n
+CONFIG_NF_CONNTRACK_FTP=n
+CONFIG_NF_CONNTRACK_H323=n
+CONFIG_NF_CONNTRACK_IRC=n
+CONFIG_NF_CONNTRACK_NETBIOS_NS=n
+CONFIG_NF_CONNTRACK_SNMP=n
+CONFIG_NF_CONNTRACK_PPTP=n
+CONFIG_NF_CONNTRACK_SANE=n
+CONFIG_NF_CONNTRACK_SIP=n
+CONFIG_NF_CONNTRACK_TFTP=n
+CONFIG_NETFILTER_SYNPROXY=n
+CONFIG_NFT_SYNPROXY=n
+CONFIG_IP_NF_TARGET_SYNPROXY=n
+CONFIG_IP6_NF_TARGET_SYNPROXY=n
+CONFIG_NFT_OSF=n
+CONFIG_NETFILTER_XT_MATCH_OSF=n
+CONFIG_NFT_TPROXY=n
+CONFIG_NFT_DUP_NETDEV=n
+CONFIG_NFT_DUP_IPV4=n
+CONFIG_NFT_DUP_IPV6=n
+CONFIG_NETFILTER_XT_TARGET_TEE=n
+CONFIG_NETFILTER_XT_TARGET_LED=n
+CONFIG_NETFILTER_XT_MATCH_IPVS=n
+CONFIG_IP_NF_TARGET_CLUSTERIP=n
+#
+# == Stop instead of sitting ==
+#
+# The board has no remote power cycle, so a kernel that stops without a reset
+# is the worst outcome (audit B1). Three kinds of stop become a panic, and
+# CONFIG_PANIC_TIMEOUT turns a panic into a reboot:
+#
+# - An oops. PANIC_ON_OOPS sets the default of kernel.panic_on_oops to 1, so a
+#   driver that faults does not leave a half-dead kernel with the killed
+#   task's locks held.
+# - A soft lockup. The detector notices a CPU stuck in kernel code for 20 s,
+#   and BOOTPARAM_SOFTLOCKUP_PANIC sets the default of kernel.softlockup_panic
+#   to 1. On one core the whole board is stuck in that case anyway.
+#
+# The audit named the two sysctls. The image applies no sysctl: its
+# /etc/sysctl.conf is empty and no init script runs sysctl -p. The Kconfig
+# defaults set the same values with no file and no script, and the sysctls
+# can still change them at run time.
+#
+# The hung task detector logs a task that sits in D state for 120 s. It does
+# not panic: a reader of /proc/cvitek/vb sits in D state for ever by design,
+# and a reboot for that is worse than the log line.
+CONFIG_PANIC_ON_OOPS=y
+CONFIG_SOFTLOCKUP_DETECTOR=y
+CONFIG_BOOTPARAM_SOFTLOCKUP_PANIC=y
+CONFIG_DETECT_HUNG_TASK=y
+#
+# == Memory pressure the board can see ==
+#
+# PSI gives /proc/pressure/memory, the share of time tasks stall on memory
+# (audit B2). The board wedges under pressure before the OOM killer acts, and
+# a supervisor that reads PSI can shed load first. It is off unless the
+# command line has psi=1, which the slot boot script adds, so the rescue
+# kernel and a build without that line keep the accounting off.
+CONFIG_PSI=y
+CONFIG_PSI_DEFAULT_DISABLED=y
+#
+# == Built for later use, not configured by any gadget yet ==
+#
+# UAC2, a newer USB audio function that Windows 10, macOS and Linux drive
+# without a vendor driver. The gadget keeps UAC1 until a change in IronKVM
+# moves it. USB_RAW_GADGET lets a userspace program act as any USB device,
+# for the remote USB work (issue #12).
+CONFIG_USB_CONFIGFS_F_UAC2=y
+CONFIG_USB_RAW_GADGET=y
+#
+# ISO9660 and UDF, so the board can read an image's label and tell an install
+# disc from other images before it offers the image as a CD-ROM (issues #8 and
+# #9). Built in, like USB_RAW_GADGET above, so that no module path has to be
+# declared in kernel-oot and carried in the baseline listing. STATE-kernel.md,
+# section "Image t", records what the three cost.
+CONFIG_ISO9660_FS=y
+CONFIG_UDF_FS=y
+#
+# == cgroups, so the server and PicoClaw can be capped ==
+#
+# The memory controller lets a cgroup hold the server and another hold
+# PicoClaw, each with a limit, so that one of them hitting its limit is
+# reclaimed or killed inside its group before the board as a whole reaches
+# the pressure at which fork stops working. The pids controller caps a fork
+# loop the same way. Audit B7 kept these out while the prebuilt encoders
+# pinned the kernel's structure layouts; since the encoders are built from
+# source (issue #19) that reason is gone. The cost is measured in
+# STATE-kernel.md, section "Image u": struct page grows from 56 to 64 bytes,
+# about 508 KiB of MemTotal, and every page allocation is charged to a group.
+# Nothing uses them until an init script creates the groups.
+CONFIG_CGROUPS=y
+CONFIG_MEMCG=y
+CONFIG_CGROUP_PIDS=y
+#
+# == Namespaces for containers (issue #20) ==
+#
+# The capture already has USER_NS and NET_NS. A container also needs its own
+# process IDs, System V IPC and host name, or it sees and can signal the
+# board's processes. The three are small, and they ride along with the
+# forced_eject kernel (issue #25) so that the container feasibility work needs
+# no kernel of its own. Nothing creates a namespace until a container runs.
+CONFIG_PID_NS=y
+CONFIG_IPC_NS=y
+CONFIG_UTS_NS=y
+#
+# == Containers and the Ventoy disk (issues #20 and #31) ==
+#
+# VETH gives a container a network namespace of its own, routed and masqueraded
+# through the board's nftables NAT; audit A5 removed it when nothing used it.
+# OVERLAY_FS is for OCI images with layers and container clones. Device mapper
+# assembles the Ventoy disk from a head file and the ISOs in place (dm-linear,
+# part of BLK_DEV_DM, and dm-zero for padding). docs/notes/2026-09-28-lxc.md and
+# docs/notes/2026-09-28-kernel-batch.md have the reasons and the sizes: about
+# 120 KiB of kernel together.
+CONFIG_VETH=y
+CONFIG_OVERLAY_FS=y
+CONFIG_MD=y
+CONFIG_BLK_DEV_DM=y
+CONFIG_DM_ZERO=y

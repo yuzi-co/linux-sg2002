@@ -1,0 +1,53 @@
+Linux for the Sophgo SG2002 NanoKVM, as used by IronKVM
+=========================================================
+
+This repository holds the source of the Linux kernels that IronKVM runs on
+the Sipeed NanoKVM (a LicheeRV Nano B with the Sophgo SG2002). It is a fork
+of the stable tree (gregkh/linux), and it exists so that the corresponding
+source of each kernel IronKVM ships is public. The work itself happens in
+ironkvm-dist (github.com/yuzi-co/ironkvm-dist); this repository takes no
+issues. The branch ironkvm/7.2 and its README.ironkvm describe the mainline
+kernel and the branch and tag scheme.
+
+
+vendor/5.10 at v5.10.270-ironkvm.1
+----------------------------------
+
+The vendor kernel of IronKVM's first slot (slot A), release string
+5.10.270-ironkvm0. It is published for its source only; no new work
+happens on this branch.
+
+ 1. v5.10.4, the release Sophgo's BSP kernel is based on.
+ 2. "Sophgo/Sipeed vendor 5.10 source as shipped": the linux_5.10
+    directory of sipeed/LicheeRV-Nano-Build at
+    98d17d2c04f9f6efc393c0e6a93b1a0f126b084b, as one commit. The BSP has
+    no git history for it.
+ 3. The merge of v5.10.270, made as ironkvm-dist's
+    socs/sophgo-sg2002/kernel/merge.sh makes it (git merge-tree with
+    v5.10.4 as the merge base, then the 31 resolutions of its resolved/
+    directory, which its resolved/NOTES.md explains).
+ 4. ironkvm-dist's six kernel patches (socs/sophgo-sg2002/kernel/patches/
+    kernel), in name order.
+ 5. ironkvm/configs/ and this file.
+
+The tree before step 5 is the tree that ironkvm-dist's container/tree.sh
+builds from (git tree cb7d68249f4f1411f5ab9bae1e873cb6006d73bb).
+
+The configuration: ironkvm/configs/seed.config is ironkvm-dist's
+devices/sipeed-nanokvm/kernel.config, and ironkvm/configs/ironkvm.fragment
+its socs/sophgo-sg2002/kernel/config.fragment. The build takes the seed
+from its "Automatically generated file" line on, appends
+CONFIG_LOCALVERSION="-ironkvm0", "# CONFIG_LOCALVERSION_AUTO is not set"
+and the fragment
+and runs "make olddefconfig" (ironkvm-dist's seed-config.sh). The vendor
+out-of-tree drivers (sophgo/osdrv and the encoder drivers) are not in this
+tree; ironkvm-dist pins their sources and patches.
+
+
+License
+-------
+
+The kernel is licensed under the GNU General Public License version 2
+(COPYING), with the exceptions and other licenses that LICENSES/ and the
+SPDX lines of individual files give. The vendor changes and the patches
+change GPL-2.0 files and are distributed under the same terms.
