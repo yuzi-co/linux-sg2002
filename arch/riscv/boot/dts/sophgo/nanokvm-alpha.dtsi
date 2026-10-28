@@ -34,34 +34,15 @@
 	};
 };
 
-&{/soc} {
-	/*
-	 * The always-on domain's GPIO block. Linux 7.2's SoC DT does not
-	 * describe it. Address and interrupt from the vendor DT: PLIC source
-	 * 70, which mainline numbers SOC_PERIPHERAL_IRQ(54), as vendor 60 is
-	 * porta's SOC_PERIPHERAL_IRQ(44).
-	 */
-	gpio4: gpio@5021000 {
-		compatible = "snps,dw-apb-gpio";
-		reg = <0x05021000 0x1000>;
-		#address-cells = <1>;
-		#size-cells = <0>;
-
-		porte: gpio-controller@0 {
-			compatible = "snps,dw-apb-gpio-port";
-			gpio-controller;
-			#gpio-cells = <2>;
-			ngpios = <32>;
-			reg = <0>;
-			interrupt-controller;
-			#interrupt-cells = <2>;
-			interrupts = <SOC_PERIPHERAL_IRQ(54) IRQ_TYPE_LEVEL_HIGH>;
-			gpio-line-names =
-				"", "", "", "", "", "", "", "",		/*  0- 7 */
-				"", "", "", "", "", "", "", "",		/*  8-15 */
-				"", "", "", "oled-reset";		/* 16-19 */
-		};
-	};
+/*
+ * The always-on domain's GPIO block (PWR_GPIO). The SoC DT describes it
+ * since Linux 7.3 (gpio4, porte); name the OLED reset line on it.
+ */
+&porte {
+	gpio-line-names =
+		"", "", "", "", "", "", "", "",		/*  0- 7 */
+		"", "", "", "", "", "", "", "",		/*  8-15 */
+		"", "", "", "oled-reset";		/* 16-19 */
 };
 
 &pinctrl {
