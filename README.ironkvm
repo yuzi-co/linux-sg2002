@@ -23,13 +23,13 @@ vendor/<x.y>
     The Sophgo/Sipeed vendor kernel of the first slot (slot A), published
     for its source only. No new work happens there.
 
-v<x.y.z>-ironkvm.<n>
-    A commit IronKVM builds. <x.y.z> is the upstream release under it and
+v<x.y[.z]>-ironkvm.<n>
+    A commit IronKVM builds. <x.y[.z]> is the upstream release tag under it and
     <n> counts the IronKVM releases on that base, from 1. A tag is never
     moved; a change to the tree gets the next <n>.
 
 
-ironkvm/7.3 at v7.3-ironkvm.1
+ironkvm/7.3 at v7.3-ironkvm.2
 -----------------------------
 
 On top of v7.3, the commits of ironkvm/7.2 (v7.2.9-ironkvm.1) since
@@ -58,7 +58,9 @@ v7.2.9, cherry-picked in order:
     its OLED reset line on the PWR_GPIO node the SoC DT now has (gpio4,
     porte) instead of adding that node itself, and the B-W fragment no
     longer overrides the DMA controller's compatible.
- 7. The configurations regenerated for 7.3.
+ 7. The configurations regenerated for 7.3, and (v7.3-ironkvm.2) with
+    the NBD, UDF and SquashFS options ironkvm-dist asks for since
+    v7.2.9-ironkvm.1.
 
 Each patch keeps the author, date and message of its commit on
 ironkvm/7.2. Where a cherry-pick needed a conflict resolved, the message
