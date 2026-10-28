@@ -29,10 +29,11 @@ v<x.y.z>-ironkvm.<n>
     moved; a change to the tree gets the next <n>.
 
 
-ironkvm/7.2 at v7.2.9-ironkvm.1
--------------------------------
+ironkvm/7.3 at v7.3-ironkvm.1
+-----------------------------
 
-On top of v7.2.9:
+On top of v7.3, the commits of ironkvm/7.2 (v7.2.9-ironkvm.1) since
+v7.2.9, cherry-picked in order:
 
  1. 81 patches from George Whewell's nixos-nanokvm
     (github.com/georgewhewell/nixos-nanokvm) at
@@ -41,23 +42,32 @@ On top of v7.2.9:
     eFuse, TRNG, SD/SDIO, DMA, audio, thermal, PWM, Ethernet PHY), the
     HDMI-to-CSI bridge (LT6911UXC), the CSI capture, the VPSS scaler and
     the Coda980 H.264 encoder.
- 2. 39 patches from ironkvm-dist (socs/sophgo-sg2002/mainline/patches,
+ 2. 37 patches from ironkvm-dist (socs/sophgo-sg2002/mainline/patches,
     0902 to 0950): the USB gadget (CD/DVD emulation, wakeup, HID options),
     the WAVE420L H.265 and the JPEG encoders, Coda980 rate control and
-    memory, the capture and VPSS changes, the C906 vector fixes.
+    memory, the capture and VPSS changes, the C906 vector fixes. 0942 and
+    0943 ("riscv: vector: Fix data pointer constraints in context
+    save/restore", "riscv: vector: Fix output operands in context save")
+    are dropped: 7.3 has them as 572b25f3a6 and 55b1276ef9.
  3. The device trees, in arch/riscv/boot/dts/sophgo/: nixos-nanokvm's
     LicheeRV Nano B-W fragments and the NanoKVM files, composed by
     sg2002-nanokvm-{alpha,beta,pcie}.dts.
  4. ironkvm/configs/: the kernel configurations IronKVM builds.
  5. This file.
+ 6. Two device tree commits for 7.3's SoC DT: nanokvm-alpha.dtsi names
+    its OLED reset line on the PWR_GPIO node the SoC DT now has (gpio4,
+    porte) instead of adding that node itself, and the B-W fragment no
+    longer overrides the DMA controller's compatible.
+ 7. The configurations regenerated for 7.3.
 
-Each patch keeps the author, date and message of its header. A patch with
-no header names its source in the commit message, with the author and date
-of the nixos-nanokvm commit that added it. Every patch is applied with
-"patch -p1", as nixpkgs applies kernel patches, so the tree at the tag is
-the tree IronKVM built from the patch files before this repository
-existed (without the .orig files that patch leaves where a hunk needed
-fuzz or an offset).
+Each patch keeps the author, date and message of its commit on
+ironkvm/7.2. Where a cherry-pick needed a conflict resolved, the message
+ends with a line "[ironkvm/7.3: ...]" that says how: the hwrng Makefile,
+dma_alloc_attrs() in kernel/dma/mapping.c and the sophgo DT Makefile.
+
+ironkvm/7.2 at v7.2.9-ironkvm.1 is the same series on v7.2.9, with 0942
+and 0943, every patch applied with "patch -p1" as nixpkgs applied the
+patch files before this repository existed.
 
 
 How IronKVM builds it
@@ -82,13 +92,13 @@ ironkvm/configs/ holds the result of that, as the built .config files:
 
 The build fails when the .config it generates differs from these files, so
 the published configuration is the one that ships. It sets
-SOURCE_DATE_EPOCH to the commit time of the base tag (v7.2.9: 1791024196),
+SOURCE_DATE_EPOCH to the commit time of the base tag (v7.3: 1792365298),
 the time the files of the kernel.org tarball carry, so the version banner
 and the built-in initramfs are the bytes a build from that tarball gives.
 
 The DTB IronKVM boots is compiled with cpp and dtc from
 sg2002-nanokvm-<variant>.dts, with the sophgo DT sources and include/ of
-the base tag (v7.2.9) standing in for those of this branch, as
+the base tag (v7.3) standing in for those of this branch, as
 nixos-nanokvm does. Some patches of the series add to sg2002.dtsi nodes
 that the fragments also describe (the Coda980 and the VPSS). "make dtbs"
 on this branch builds the same files over the patched sg2002.dtsi; the
