@@ -29,7 +29,7 @@ v<x.y.z>-ironkvm.<n>
     moved; a change to the tree gets the next <n>.
 
 
-ironkvm/7.2 at v7.2.9-ironkvm.1
+ironkvm/7.2 at v7.2.9-ironkvm.2
 -------------------------------
 
 On top of v7.2.9:
@@ -48,7 +48,9 @@ On top of v7.2.9:
  3. The device trees, in arch/riscv/boot/dts/sophgo/: nixos-nanokvm's
     LicheeRV Nano B-W fragments and the NanoKVM files, composed by
     sg2002-nanokvm-{alpha,beta,pcie}.dts.
- 4. ironkvm/configs/: the kernel configurations IronKVM builds.
+ 4. ironkvm/configs/: the kernel configurations IronKVM builds, and
+    (v7.2.9-ironkvm.2) the NBD, UDF and SquashFS options ironkvm-dist
+    asks for since v7.2.9-ironkvm.1.
  5. This file.
 
 Each patch keeps the author, date and message of its header. A patch with
