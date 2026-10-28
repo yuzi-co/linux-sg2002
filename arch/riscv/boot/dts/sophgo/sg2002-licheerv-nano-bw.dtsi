@@ -207,15 +207,11 @@
  * DMA channels via the dmamux. Without this the dw_axi_dmac driver
  * never binds and every DMA-using child defers probe.
  *
- * Override compatible to `sophgo,cv1800b-axi-dma` (paired with the
- * dw-axi-dmac CV1800B-support kernel patch). With the generic
- * `snps,axi-dma-1.01a`, dw_axi_dma_of_xlate calls
- * dma_get_any_slave_channel() which picks any free channel — but the
- * dmamux registers the I2S handshake against a *specific* channel ID.
- * The mismatch means transfers fire on the wrong channel and IRQs
- * never come back, so arecord opens cleanly then reads return -EIO. */
+ * The SoC DT's compatible is "sophgo,cv1800b-axi-dma", "snps,axi-dma-1.01a"
+ * (upstream 5011466bade6), so the DMA multiplexer sets the channel number
+ * in the DMA specifier and the I2S handshake lands on the channel the
+ * dmamux routed. The compatible needs no override here. */
 &dmac {
-	compatible = "sophgo,cv1800b-axi-dma";
 	status = "okay";
 };
 
