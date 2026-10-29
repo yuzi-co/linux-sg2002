@@ -29,7 +29,7 @@ v<x.y[.z]>-ironkvm.<n>
     moved; a change to the tree gets the next <n>.
 
 
-ironkvm/7.3 at v7.3-ironkvm.2
+ironkvm/7.3 at v7.3-ironkvm.3
 -----------------------------
 
 On top of v7.3, the commits of ironkvm/7.2 (v7.2.9-ironkvm.1) since
@@ -60,7 +60,7 @@ v7.2.9, cherry-picked in order:
     longer overrides the DMA controller's compatible.
  7. The configurations regenerated for 7.3, and (v7.3-ironkvm.2) with
     the NBD, UDF and SquashFS options ironkvm-dist asks for since
-    v7.2.9-ironkvm.1.
+    v7.2.9-ironkvm.1, and (v7.3-ironkvm.3) with WATCHDOG_NOWAYOUT off.
 
 Each patch keeps the author, date and message of its commit on
 ironkvm/7.2. Where a cherry-pick needed a conflict resolved, the message
