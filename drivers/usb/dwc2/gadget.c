@@ -2350,7 +2350,9 @@ static void dwc2_gadget_wait_desc_done(struct dwc2_hsotg_ep *hs_ep)
  * to it reached memory. Nothing was transferred and no XferCompl
  * follows: the request stays current, the ones queued behind it never
  * start, and the function waits until the host gives up and resets the
- * port. Start the request again; that fills the descriptor anew.
+ * port. Start the request again from what has been transferred of it, as
+ * for the next part of a request longer than one chain; that fills the
+ * descriptor anew.
  */
 static void dwc2_gadget_handle_nonisoc_bna(struct dwc2_hsotg_ep *hs_ep,
 					   u32 ints)
@@ -2367,13 +2369,12 @@ static void dwc2_gadget_handle_nonisoc_bna(struct dwc2_hsotg_ep *hs_ep,
 	dev_warn_ratelimited(hsotg->dev,
 			     "%s: BNA, DxEPINT %08x DxEPCTL %08x descriptor %08x, %s\n",
 			     hs_ep->name, ints, epctl, status,
-			     restart ? "starting the request again" : "left");
+			     restart ? "request restarted" : "not restarted");
 
 	if (!restart)
 		return;
 
-	hs_ep->req = NULL;
-	dwc2_hsotg_start_req(hsotg, hs_ep, hs_req, false);
+	dwc2_hsotg_start_req(hsotg, hs_ep, hs_req, true);
 }
 
 /**
