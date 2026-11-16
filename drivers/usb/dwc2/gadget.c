@@ -924,6 +924,7 @@ static void dwc2_gadget_config_nonisoc_xfer_ddma(struct dwc2_hsotg_ep *hs_ep,
  * @hs_ep: The isochronous endpoint.
  * @dma_buff: usb requests dma buffer.
  * @len: usb request transfer length.
+ * @hold: leave the descriptor host busy; the caller marks it host ready.
  *
  * Fills next free descriptor with the data of the arrived usb request,
  * frame info, sets Last and IOC bits increments next_desc. If filled
@@ -931,7 +932,8 @@ static void dwc2_gadget_config_nonisoc_xfer_ddma(struct dwc2_hsotg_ep *hs_ep,
  * status.
  */
 static int dwc2_gadget_fill_isoc_desc(struct dwc2_hsotg_ep *hs_ep,
-				      dma_addr_t dma_buff, unsigned int len)
+				      dma_addr_t dma_buff, unsigned int len,
+				      bool hold)
 {
 	struct dwc2_dma_desc *desc;
 	struct dwc2_hsotg *hsotg = hs_ep->parent;
@@ -980,7 +982,8 @@ static int dwc2_gadget_fill_isoc_desc(struct dwc2_hsotg_ep *hs_ep,
 	}
 
 	desc->status &= ~DEV_DMA_BUFF_STS_MASK;
-	desc->status |= (DEV_DMA_BUFF_STS_HREADY << DEV_DMA_BUFF_STS_SHIFT);
+	desc->status |= (hold ? DEV_DMA_BUFF_STS_HBUSY :
+				DEV_DMA_BUFF_STS_HREADY) << DEV_DMA_BUFF_STS_SHIFT;
 
 	/* Increment frame number by interval for IN */
 	if (hs_ep->dir_in)
@@ -992,6 +995,52 @@ static int dwc2_gadget_fill_isoc_desc(struct dwc2_hsotg_ep *hs_ep,
 		hs_ep->next_desc = 0;
 
 	return 0;
+}
+
+static void dwc2_gadget_complete_isoc_request_ddma(struct dwc2_hsotg_ep *hs_ep);
+
+/*
+ * dwc2_gadget_isoc_out_held_packet - let the core finish an OUT packet it
+ * holds from before a BNA.
+ * @hs_ep: The isochronous OUT endpoint, its new chain written and descriptor 0
+ * just marked host ready, the endpoint not enabled yet.
+ *
+ * A packet that met a descriptor that was not ready stays with the core. The
+ * core raises BNA, shows the endpoint as disabled, and keeps trying the
+ * descriptor at the start of the chain. As soon as that one is host ready the
+ * core writes the packet to it, without the endpoint being enabled, and then
+ * stops: a chain enabled after that takes no further packet. So wait for the
+ * packet to land and give its request back. The caller then starts a new
+ * chain, which no packet is waiting for.
+ *
+ * Return: true if the core took descriptor 0.
+ */
+static bool dwc2_gadget_isoc_out_held_packet(struct dwc2_hsotg_ep *hs_ep)
+{
+	struct dwc2_dma_desc *desc = &hs_ep->desc_list[0];
+	int i;
+
+	/* The core takes the descriptor within a few bus cycles, if at all. */
+	for (i = 0; i < 10; i++) {
+		if (READ_ONCE(desc->status) >> DEV_DMA_BUFF_STS_SHIFT !=
+		    DEV_DMA_BUFF_STS_HREADY)
+			break;
+		udelay(1);
+	}
+	if (i == 10)
+		return false;
+
+	/* One packet of at most 1024 bytes: the DMA takes microseconds. */
+	for (i = 0; i < 100; i++) {
+		if (READ_ONCE(desc->status) >> DEV_DMA_BUFF_STS_SHIFT ==
+		    DEV_DMA_BUFF_STS_DMADONE)
+			break;
+		udelay(1);
+	}
+
+	dwc2_gadget_complete_isoc_request_ddma(hs_ep);
+
+	return true;
 }
 
 /*
@@ -1006,6 +1055,7 @@ static void dwc2_gadget_start_isoc_ddma(struct dwc2_hsotg_ep *hs_ep)
 	struct dwc2_hsotg *hsotg = hs_ep->parent;
 	struct dwc2_hsotg_req *hs_req, *treq;
 	int index = hs_ep->index;
+	bool again = false;
 	int ret;
 	int i;
 	u32 dma_reg;
@@ -1013,6 +1063,7 @@ static void dwc2_gadget_start_isoc_ddma(struct dwc2_hsotg_ep *hs_ep)
 	u32 ctrl;
 	struct dwc2_dma_desc *desc;
 
+restart:
 	if (list_empty(&hs_ep->queue)) {
 		hs_ep->target_frame = TARGET_FRAME_INITIAL;
 		dev_dbg(hsotg->dev, "%s: No requests in queue\n", __func__);
@@ -1027,6 +1078,12 @@ static void dwc2_gadget_start_isoc_ddma(struct dwc2_hsotg_ep *hs_ep)
 				    << DEV_DMA_BUFF_STS_SHIFT);
 	}
 
+	/*
+	 * Descriptor 0 stays host busy until the rest of the chain is written
+	 * and the chain address is set. After a BNA the core may take it the
+	 * moment it is host ready, see dwc2_gadget_isoc_out_held_packet(), and
+	 * must not find it as the last of a chain that is still being built.
+	 */
 	hs_ep->next_desc = 0;
 	list_for_each_entry_safe(hs_req, treq, &hs_ep->queue, queue) {
 		dma_addr_t dma_addr = hs_req->req.dma;
@@ -1036,7 +1093,8 @@ static void dwc2_gadget_start_isoc_ddma(struct dwc2_hsotg_ep *hs_ep)
 			dma_addr = sg_dma_address(hs_req->req.sg);
 		}
 		ret = dwc2_gadget_fill_isoc_desc(hs_ep, dma_addr,
-						 hs_req->req.length);
+						 hs_req->req.length,
+						 !hs_ep->next_desc);
 		if (ret)
 			break;
 	}
@@ -1046,8 +1104,10 @@ static void dwc2_gadget_start_isoc_ddma(struct dwc2_hsotg_ep *hs_ep)
 	dma_reg = hs_ep->dir_in ? DIEPDMA(index) : DOEPDMA(index);
 
 	/*
-	 * The queue is not empty, so at least one descriptor was filled:
-	 * next_desc 0 means that the chain is full and the index wrapped.
+	 * The rest of the chain has to be visible before descriptor 0 is
+	 * host ready. The queue is not empty, so at least one descriptor was
+	 * filled: next_desc 0 means that the chain is full and the index
+	 * wrapped.
 	 */
 	i = hs_ep->next_desc ? hs_ep->next_desc - 1 :
 			       MAX_DMA_DESC_NUM_HS_ISOC - 1;
@@ -1055,6 +1115,17 @@ static void dwc2_gadget_start_isoc_ddma(struct dwc2_hsotg_ep *hs_ep)
 
 	/* write descriptor chain address to control register */
 	dwc2_writel(hsotg, hs_ep->desc_list_dma, dma_reg);
+
+	desc = &hs_ep->desc_list[0];
+	desc->status &= ~DEV_DMA_BUFF_STS_MASK;
+	desc->status |= DEV_DMA_BUFF_STS_HREADY << DEV_DMA_BUFF_STS_SHIFT;
+	dwc2_gadget_desc_visible(desc);
+
+	if (!hs_ep->dir_in && !again &&
+	    dwc2_gadget_isoc_out_held_packet(hs_ep)) {
+		again = true;
+		goto restart;
+	}
 
 	ctrl = dwc2_readl(hsotg, depctl);
 	ctrl |= DXEPCTL_EPENA | DXEPCTL_CNAK;
@@ -1523,7 +1594,7 @@ static int dwc2_hsotg_ep_queue(struct usb_ep *ep, struct usb_request *req,
 				dma_addr = sg_dma_address(hs_req->req.sg);
 			}
 			dwc2_gadget_fill_isoc_desc(hs_ep, dma_addr,
-						   hs_req->req.length);
+						   hs_req->req.length, false);
 		}
 		return 0;
 	}
@@ -2286,17 +2357,33 @@ static void dwc2_gadget_restart_isoc_out_ddma(struct dwc2_hsotg_ep *hs_ep)
  * dwc2_gadget_handle_isoc_bna - handle BNA interrupt for ISOC.
  * @hs_ep: The isochronous endpoint.
  *
- * If EP ISOC OUT then need to flush RX FIFO to remove source of BNA
- * interrupt. Reset target frame and next_desc to allow to start
- * ISOC's on NAK interrupt for IN direction or on OUTTKNEPDIS
- * interrupt for OUT direction.
+ * Give back the request that met the BNA and reset target frame and
+ * next_desc. An IN endpoint starts again on the next NAK interrupt. An OUT
+ * endpoint is restarted here, see dwc2_gadget_restart_isoc_out_ddma().
+ *
+ * The Rx FIFO is not flushed for an OUT endpoint. It is shared by all OUT
+ * endpoints and the host goes on sending, so a flush here can hit a packet
+ * that is being received, after which the core no longer drains the FIFO.
+ * The packet that met the BNA is not dropped by a flush either: the core
+ * holds it and writes it to the first descriptor of the new chain.
  */
 static void dwc2_gadget_handle_isoc_bna(struct dwc2_hsotg_ep *hs_ep)
 {
 	struct dwc2_hsotg *hsotg = hs_ep->parent;
 
-	if (!hs_ep->dir_in)
-		dwc2_flush_rx_fifo(hsotg);
+	/*
+	 * The core disables an OUT endpoint that raises BNA and goes on
+	 * raising BNA for it until it is enabled again. So a BNA can be
+	 * latched between the moment the interrupt handler clears DOEPINT and
+	 * the restart below, and is then seen with the new chain running.
+	 * Leave that chain alone. If the endpoint is still about to be
+	 * disabled, the endpoint-disabled interrupt or the next BNA restarts
+	 * it.
+	 */
+	if (!hs_ep->dir_in &&
+	    dwc2_readl(hsotg, DOEPCTL(hs_ep->index)) & DXEPCTL_EPENA)
+		return;
+
 	dwc2_hsotg_complete_request(hsotg, hs_ep, get_ep_head(hs_ep), 0);
 
 	hs_ep->target_frame = TARGET_FRAME_INITIAL;
@@ -3258,6 +3345,19 @@ static void dwc2_hsotg_epint(struct dwc2_hsotg *hsotg, unsigned int idx,
 		}
 	}
 
+	/*
+	 * Handle BNA before the endpoint-disabled, OUT token and NAK
+	 * interrupts that can come with it. Those handlers start a new chain
+	 * for an isochronous endpoint in descriptor DMA mode, and the BNA
+	 * handler must not then give back a request of the running chain and
+	 * reset the endpoint state under it.
+	 */
+	if (ints & DXEPINT_BNAINTR) {
+		dev_dbg(hsotg->dev, "%s: BNA interrupt\n", __func__);
+		if (hs_ep->isochronous)
+			dwc2_gadget_handle_isoc_bna(hs_ep);
+	}
+
 	if (ints & DXEPINT_EPDISBLD)
 		dwc2_gadget_handle_ep_disabled(hs_ep);
 
@@ -3316,13 +3416,14 @@ static void dwc2_hsotg_epint(struct dwc2_hsotg *hsotg, unsigned int idx,
 	if (ints & DXEPINT_BACK2BACKSETUP)
 		dev_dbg(hsotg->dev, "%s: B2BSetup/INEPNakEff\n", __func__);
 
-	if (ints & DXEPINT_BNAINTR) {
-		dev_dbg(hsotg->dev, "%s: BNA interrupt\n", __func__);
-		if (hs_ep->isochronous)
-			dwc2_gadget_handle_isoc_bna(hs_ep);
-		else if (using_desc_dma(hsotg) && idx)
-			dwc2_gadget_handle_nonisoc_bna(hs_ep, ints);
-	}
+	/*
+	 * A bulk or interrupt endpoint is restarted here, after the
+	 * endpoint-disabled handler above has flushed the TxFIFO of an IN
+	 * endpoint.
+	 */
+	if ((ints & DXEPINT_BNAINTR) && !hs_ep->isochronous &&
+	    using_desc_dma(hsotg) && idx)
+		dwc2_gadget_handle_nonisoc_bna(hs_ep, ints);
 
 	if (dir_in && !hs_ep->isochronous) {
 		/* not sure if this is important, but we'll clear it anyway */
