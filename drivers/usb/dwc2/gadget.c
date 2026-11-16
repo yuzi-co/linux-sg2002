@@ -1018,6 +1018,7 @@ static void dwc2_gadget_complete_isoc_request_ddma(struct dwc2_hsotg_ep *hs_ep);
 static bool dwc2_gadget_isoc_out_held_packet(struct dwc2_hsotg_ep *hs_ep)
 {
 	struct dwc2_dma_desc *desc = &hs_ep->desc_list[0];
+	u32 target_frame;
 	int i;
 
 	/* The core takes the descriptor within a few bus cycles, if at all. */
@@ -1038,7 +1039,15 @@ static bool dwc2_gadget_isoc_out_held_packet(struct dwc2_hsotg_ep *hs_ep)
 		udelay(1);
 	}
 
+	/*
+	 * The completion may queue a request. Keep it out of this chain,
+	 * which the caller builds again: as long as target_frame is initial,
+	 * dwc2_hsotg_ep_queue() only adds the request to the queue.
+	 */
+	target_frame = hs_ep->target_frame;
+	hs_ep->target_frame = TARGET_FRAME_INITIAL;
 	dwc2_gadget_complete_isoc_request_ddma(hs_ep);
+	hs_ep->target_frame = target_frame;
 
 	return true;
 }
@@ -1095,7 +1104,12 @@ restart:
 		ret = dwc2_gadget_fill_isoc_desc(hs_ep, dma_addr,
 						 hs_req->req.length,
 						 !hs_ep->next_desc);
-		if (ret)
+		/*
+		 * Stop when the chain is full and next_desc has wrapped:
+		 * descriptor 0 is still host busy here, so the next call
+		 * would not see the chain as full and would fill it again.
+		 */
+		if (ret || !hs_ep->next_desc)
 			break;
 	}
 
@@ -1588,13 +1602,25 @@ static int dwc2_hsotg_ep_queue(struct usb_ep *ep, struct usb_request *req,
 	if (using_desc_dma(hs) && hs_ep->isochronous) {
 		if (hs_ep->target_frame != TARGET_FRAME_INITIAL) {
 			dma_addr_t dma_addr = hs_req->req.dma;
+			bool hold;
 
 			if (hs_req->req.num_sgs) {
 				WARN_ON(hs_req->req.num_sgs > 1);
 				dma_addr = sg_dma_address(hs_req->req.sg);
 			}
+
+			/*
+			 * After a BNA the core retries descriptor 0 for the
+			 * packet it holds. Until the BNA handler has built
+			 * the chain again, a request queued from a completion
+			 * must not make that descriptor host ready, see
+			 * dwc2_gadget_isoc_out_held_packet().
+			 */
+			hold = !hs_ep->dir_in && !hs_ep->next_desc &&
+			       !(dwc2_readl(hs, DOEPCTL(hs_ep->index)) &
+				 DXEPCTL_EPENA);
 			dwc2_gadget_fill_isoc_desc(hs_ep, dma_addr,
-						   hs_req->req.length, false);
+						   hs_req->req.length, hold);
 		}
 		return 0;
 	}
@@ -2384,11 +2410,17 @@ static void dwc2_gadget_handle_isoc_bna(struct dwc2_hsotg_ep *hs_ep)
 	    dwc2_readl(hsotg, DOEPCTL(hs_ep->index)) & DXEPCTL_EPENA)
 		return;
 
-	dwc2_hsotg_complete_request(hsotg, hs_ep, get_ep_head(hs_ep), 0);
-
+	/*
+	 * Reset the state before the request is given back. Its completion
+	 * may queue a request, and that one must go to the queue only, not
+	 * to a descriptor of the chain that has stopped: for an OUT endpoint
+	 * the core would take descriptor 0 for the packet it holds.
+	 */
 	hs_ep->target_frame = TARGET_FRAME_INITIAL;
 	hs_ep->next_desc = 0;
 	hs_ep->compl_desc = 0;
+
+	dwc2_hsotg_complete_request(hsotg, hs_ep, get_ep_head(hs_ep), 0);
 
 	dwc2_gadget_restart_isoc_out_ddma(hs_ep);
 }
@@ -2445,6 +2477,11 @@ static void dwc2_gadget_wait_desc_done(struct dwc2_hsotg_ep *hs_ep)
  * port. Start the request again from what has been transferred of it, as
  * for the next part of a request longer than one chain; that fills the
  * descriptor anew.
+ *
+ * This is done only while the first descriptor of the chain is still host
+ * ready. If the core has taken it, a part of the chain has been transferred
+ * that the request does not account for yet, and starting again would
+ * transfer that part twice.
  */
 static void dwc2_gadget_handle_nonisoc_bna(struct dwc2_hsotg_ep *hs_ep,
 					   u32 ints)
@@ -2455,8 +2492,9 @@ static void dwc2_gadget_handle_nonisoc_bna(struct dwc2_hsotg_ep *hs_ep,
 					DOEPCTL(hs_ep->index);
 	u32 epctl = dwc2_readl(hsotg, epctl_reg);
 	u32 status = hs_ep->desc_list ? READ_ONCE(hs_ep->desc_list[0].status) : 0;
-	bool restart = hs_req && !hs_ep->halted &&
-		       !(epctl & (DXEPCTL_EPENA | DXEPCTL_STALL));
+	bool restart = hs_req && !hs_ep->halted && hs_ep->desc_list &&
+		       !(epctl & (DXEPCTL_EPENA | DXEPCTL_STALL)) &&
+		       status >> DEV_DMA_BUFF_STS_SHIFT == DEV_DMA_BUFF_STS_HREADY;
 
 	dev_warn_ratelimited(hsotg->dev,
 			     "%s: BNA, DxEPINT %08x DxEPCTL %08x descriptor %08x, %s\n",
