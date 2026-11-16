@@ -29,7 +29,7 @@ v<x.y[.z]>-ironkvm.<n>
     moved; a change to the tree gets the next <n>.
 
 
-ironkvm/7.3 at v7.3-ironkvm.3
+ironkvm/7.3 at v7.3-ironkvm.4
 -----------------------------
 
 On top of v7.3, the commits of ironkvm/7.2 (v7.2.9-ironkvm.1) since
@@ -61,6 +61,12 @@ v7.2.9, cherry-picked in order:
  7. The configurations regenerated for 7.3, and (v7.3-ironkvm.2) with
     the NBD, UDF and SquashFS options ironkvm-dist asks for since
     v7.2.9-ironkvm.1, and (v7.3-ironkvm.3) with WATCHDOG_NOWAYOUT off.
+ 8. (v7.3-ironkvm.4) Four dwc2 gadget commits for descriptor DMA
+    (ironkvm-dist #201): the isochronous OUT restart after BNA, which
+    in v7.3-ironkvm.3 left the UAC1 endpoint taking a BNA and a restart
+    for every packet; the bulk and interrupt restart from where the
+    request stopped; and the read-back of the last descriptor of a full
+    isochronous chain.
 
 Each patch keeps the author, date and message of its commit on
 ironkvm/7.2. Where a cherry-pick needed a conflict resolved, the message
