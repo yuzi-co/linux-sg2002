@@ -1045,8 +1045,13 @@ static void dwc2_gadget_start_isoc_ddma(struct dwc2_hsotg_ep *hs_ep)
 	depctl = hs_ep->dir_in ? DIEPCTL(index) : DOEPCTL(index);
 	dma_reg = hs_ep->dir_in ? DIEPDMA(index) : DOEPDMA(index);
 
-	if (hs_ep->next_desc)
-		dwc2_gadget_desc_visible(&hs_ep->desc_list[hs_ep->next_desc - 1]);
+	/*
+	 * The queue is not empty, so at least one descriptor was filled:
+	 * next_desc 0 means that the chain is full and the index wrapped.
+	 */
+	i = hs_ep->next_desc ? hs_ep->next_desc - 1 :
+			       MAX_DMA_DESC_NUM_HS_ISOC - 1;
+	dwc2_gadget_desc_visible(&hs_ep->desc_list[i]);
 
 	/* write descriptor chain address to control register */
 	dwc2_writel(hsotg, hs_ep->desc_list_dma, dma_reg);
