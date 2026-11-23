@@ -520,7 +520,21 @@ static void lt6911uxe_uxc_poll_work(struct work_struct *work)
 	bool mode_changed = false;
 	bool streaming;
 
-	mutex_lock(&lt6911uxe->mode_lock);
+	/*
+	 * A timing query holds mode_lock while it takes the active state
+	 * lock, and stream-off holds the state lock while it cancels this
+	 * work, so waiting for mode_lock here can deadlock the three. The
+	 * query refreshes cur_mode itself: just poll again later.
+	 */
+	if (!mutex_trylock(&lt6911uxe->mode_lock)) {
+		mutex_lock(&lt6911uxe->stream_lock);
+		if (lt6911uxe->uxc_streaming)
+			schedule_delayed_work(&lt6911uxe->uxc_poll_work,
+					      msecs_to_jiffies(LT6911UXC_POLL_INTERVAL_MS));
+		mutex_unlock(&lt6911uxe->stream_lock);
+		return;
+	}
+
 	mutex_lock(&lt6911uxe->stream_lock);
 	streaming = lt6911uxe->uxc_streaming;
 	mutex_unlock(&lt6911uxe->stream_lock);
