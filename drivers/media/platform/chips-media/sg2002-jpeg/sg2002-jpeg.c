@@ -218,8 +218,9 @@ struct sg_jpeg_dev {
 	struct reset_control *rstc;
 	int irq;
 
-	struct mutex power_mutex;	/* power_users and power changes */
+	struct mutex power_mutex;	/* power_users, removed and power changes */
 	unsigned int power_users;
+	bool removed;			/* the platform device is gone */
 
 	/* hw_lock guards powered, the running job and its start time. */
 	spinlock_t hw_lock;
@@ -585,7 +586,9 @@ static int sg_jpeg_power_get(struct sg_jpeg_dev *jpeg)
 	int ret = 0;
 
 	mutex_lock(&jpeg->power_mutex);
-	if (!jpeg->power_users)
+	if (jpeg->removed)
+		ret = -ENODEV;
+	else if (!jpeg->power_users)
 		ret = sg_jpeg_power_on(jpeg);
 	if (!ret)
 		jpeg->power_users++;
@@ -597,7 +600,8 @@ static int sg_jpeg_power_get(struct sg_jpeg_dev *jpeg)
 static void sg_jpeg_power_put(struct sg_jpeg_dev *jpeg)
 {
 	mutex_lock(&jpeg->power_mutex);
-	if (!--jpeg->power_users)
+	/* The clocks and the reset went with the platform device. */
+	if (!--jpeg->power_users && !jpeg->removed)
 		sg_jpeg_power_off(jpeg);
 	mutex_unlock(&jpeg->power_mutex);
 }
@@ -1447,6 +1451,14 @@ static const struct v4l2_file_operations sg_jpeg_fops = {
 
 /* Platform device */
 
+static void sg_jpeg_v4l2_release(struct v4l2_device *v4l2_dev)
+{
+	struct sg_jpeg_dev *jpeg = container_of(v4l2_dev, struct sg_jpeg_dev, v4l2_dev);
+
+	v4l2_m2m_release(jpeg->m2m_dev);
+	kfree(jpeg);
+}
+
 static int sg_jpeg_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -1455,7 +1467,11 @@ static int sg_jpeg_probe(struct platform_device *pdev)
 	unsigned int i;
 	int ret;
 
-	jpeg = devm_kzalloc(dev, sizeof(*jpeg), GFP_KERNEL);
+	/*
+	 * An open file outlives the platform device, so the state it uses is
+	 * freed from the v4l2_device release, not with the device resources.
+	 */
+	jpeg = kzalloc_obj(*jpeg);
 	if (!jpeg)
 		return -ENOMEM;
 	jpeg->dev = dev;
@@ -1467,34 +1483,42 @@ static int sg_jpeg_probe(struct platform_device *pdev)
 
 	ret = sg_jpeg_build_huff(jpeg);
 	if (ret)
-		return ret;
+		goto err_free;
 
 	jpeg->base = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(jpeg->base))
-		return PTR_ERR(jpeg->base);
+	if (IS_ERR(jpeg->base)) {
+		ret = PTR_ERR(jpeg->base);
+		goto err_free;
+	}
 
 	for (i = 0; i < ARRAY_SIZE(jpeg->clks); i++)
 		jpeg->clks[i].id = sg_jpeg_clk_names[i];
 	ret = devm_clk_bulk_get(dev, ARRAY_SIZE(jpeg->clks), jpeg->clks);
-	if (ret)
-		return dev_err_probe(dev, ret, "cannot get clocks\n");
+	if (ret) {
+		dev_err_probe(dev, ret, "cannot get clocks\n");
+		goto err_free;
+	}
 
 	jpeg->rstc = devm_reset_control_get_exclusive(dev, NULL);
-	if (IS_ERR(jpeg->rstc))
-		return dev_err_probe(dev, PTR_ERR(jpeg->rstc), "cannot get reset\n");
+	if (IS_ERR(jpeg->rstc)) {
+		ret = dev_err_probe(dev, PTR_ERR(jpeg->rstc), "cannot get reset\n");
+		goto err_free;
+	}
 
 	/* The unit addresses 32 bits; DRAM is below 4 GiB on the SG2002. */
 	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
 	if (ret)
-		return ret;
+		goto err_free;
 
 	/*
 	 * Power the unit once to see that it answers and to leave its
 	 * interrupt sources masked and clear before the line is requested.
 	 */
 	ret = sg_jpeg_power_on(jpeg);
-	if (ret)
-		return dev_err_probe(dev, ret, "cannot power the unit\n");
+	if (ret) {
+		dev_err_probe(dev, ret, "cannot power the unit\n");
+		goto err_free;
+	}
 	for (i = 0; i < ARRAY_SIZE(jpeg->clks); i++)
 		dev_info(dev, "clock %s: %lu Hz\n", jpeg->clks[i].id,
 			 clk_get_rate(jpeg->clks[i].clk));
@@ -1503,20 +1527,25 @@ static int sg_jpeg_probe(struct platform_device *pdev)
 
 	if (use_irq) {
 		jpeg->irq = platform_get_irq(pdev, 0);
-		if (jpeg->irq < 0)
-			return jpeg->irq;
+		if (jpeg->irq < 0) {
+			ret = jpeg->irq;
+			goto err_free;
+		}
 		/* Enabled only while the unit is powered. */
 		ret = devm_request_threaded_irq(dev, jpeg->irq, sg_jpeg_irq,
 						sg_jpeg_irq_thread,
 						IRQF_ONESHOT | IRQF_NO_AUTOEN,
 						dev_name(dev), jpeg);
-		if (ret)
-			return dev_err_probe(dev, ret, "cannot request irq %d\n", jpeg->irq);
+		if (ret) {
+			dev_err_probe(dev, ret, "cannot request irq %d\n", jpeg->irq);
+			goto err_free;
+		}
 	}
 
+	jpeg->v4l2_dev.release = sg_jpeg_v4l2_release;
 	ret = v4l2_device_register(dev, &jpeg->v4l2_dev);
 	if (ret)
-		return ret;
+		goto err_free;
 
 	jpeg->m2m_dev = v4l2_m2m_init(&sg_jpeg_m2m_ops);
 	if (IS_ERR(jpeg->m2m_dev)) {
@@ -1549,6 +1578,8 @@ err_m2m:
 	v4l2_m2m_release(jpeg->m2m_dev);
 err_v4l2:
 	v4l2_device_unregister(&jpeg->v4l2_dev);
+err_free:
+	kfree(jpeg);
 	return ret;
 }
 
@@ -1556,14 +1587,37 @@ static void sg_jpeg_remove(struct platform_device *pdev)
 {
 	struct sg_jpeg_dev *jpeg = platform_get_drvdata(pdev);
 
+	/* No new open; an ioctl on an open file now fails with -ENODEV. */
 	video_unregister_device(&jpeg->vfd);
+	/* Wait for an ioctl that began before, it may queue a job. */
+	mutex_lock(&jpeg->mutex);
+	mutex_unlock(&jpeg->mutex);
+
+	/*
+	 * Open files remain and may hold queued buffers. Let the running
+	 * picture finish and start no other, then stop what finishes it.
+	 */
+	v4l2_m2m_suspend(jpeg->m2m_dev);
 	cancel_delayed_work_sync(&jpeg->timeout_work);
 	cancel_work_sync(&jpeg->poll_work);
-	v4l2_m2m_release(jpeg->m2m_dev);
-	v4l2_device_unregister(&jpeg->v4l2_dev);
+
+	/*
+	 * Power the unit off now: its clocks and reset go with the device,
+	 * so a later release() of an open file must not touch them.
+	 */
+	mutex_lock(&jpeg->power_mutex);
+	jpeg->removed = true;
+	if (jpeg->power_users)
+		sg_jpeg_power_off(jpeg);
+	mutex_unlock(&jpeg->power_mutex);
+
 	if (jpeg->missed_irqs)
 		dev_info(jpeg->dev, "%lu pictures finished without an interrupt\n",
 			 jpeg->missed_irqs);
+
+	/* The last open file frees the device state, see sg_jpeg_v4l2_release(). */
+	v4l2_device_unregister(&jpeg->v4l2_dev);
+	v4l2_device_put(&jpeg->v4l2_dev);
 }
 
 static const struct of_device_id sg_jpeg_of_match[] = {
