@@ -1387,8 +1387,8 @@ static int do_mode_sense(struct fsg_common *common, struct fsg_buffhd *bh)
 		buf += 12;
 	}
 
-	/* Power Condition Page */
-	if (page_code == 0x1A || all_pages) {
+	/* Power Condition Page, for CD-ROM LUNs only */
+	if (curlun->cdrom && (page_code == 0x1A || all_pages)) {
 		valid_page = 1;
 		buf[0] = 0x1A;		/* Page code */
 		buf[1] = 10;		/* Page length */
