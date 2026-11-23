@@ -263,6 +263,10 @@ static int cv1800_pconf_get(struct pinctrl_dev *pctldev,
 	value = readl(cv1800_pinctrl_get_component_addr(priv, &pin->conf));
 
 	switch (param) {
+	case PIN_CONFIG_BIAS_DISABLE:
+		enabled = !(value & (PIN_IO_PULLUP | PIN_IO_PULLDOWN));
+		arg = 0;
+		break;
 	case PIN_CONFIG_BIAS_PULL_DOWN:
 		enabled = FIELD_GET(PIN_IO_PULLDOWN, value);
 		arg = sophgo_pinctrl_typical_pull_down(pctrl, sp, priv->power_cfg);
@@ -342,13 +346,31 @@ static int cv1800_pinconf_compute_config(struct sophgo_pinctrl *pctrl,
 		u32 arg = pinconf_to_config_argument(configs[i]);
 
 		switch (param) {
+		/*
+		 * The pull-up and pull-down are mutually exclusive, and the
+		 * pads leave reset with one of them enabled. Enabling one
+		 * therefore has to disable the other, or both stay on.
+		 */
+		case PIN_CONFIG_BIAS_DISABLE:
+			FIELD_MODIFY(PIN_IO_PULLUP, &v, 0);
+			FIELD_MODIFY(PIN_IO_PULLDOWN, &v, 0);
+			m |= PIN_IO_PULLUP | PIN_IO_PULLDOWN;
+			break;
 		case PIN_CONFIG_BIAS_PULL_DOWN:
 			FIELD_MODIFY(PIN_IO_PULLDOWN, &v, arg);
 			m |= PIN_IO_PULLDOWN;
+			if (arg) {
+				FIELD_MODIFY(PIN_IO_PULLUP, &v, 0);
+				m |= PIN_IO_PULLUP;
+			}
 			break;
 		case PIN_CONFIG_BIAS_PULL_UP:
 			FIELD_MODIFY(PIN_IO_PULLUP, &v, arg);
 			m |= PIN_IO_PULLUP;
+			if (arg) {
+				FIELD_MODIFY(PIN_IO_PULLDOWN, &v, 0);
+				m |= PIN_IO_PULLDOWN;
+			}
 			break;
 		case PIN_CONFIG_DRIVE_STRENGTH_UA:
 			ret = sophgo_pinctrl_oc2reg(pctrl, sp,
