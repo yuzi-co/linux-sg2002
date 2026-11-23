@@ -32,9 +32,13 @@ enum sg2002_vc_sram_user sg2002_vc_sram_holder(void);
 
 #else
 
+/*
+ * Without the arbiter nobody keeps the two codecs apart, so the stubs refuse
+ * rather than let a driver switch the SRAM under the other one.
+ */
 static inline int sg2002_vc_sram_acquire(enum sg2002_vc_sram_user user)
 {
-	return 0;
+	return -ENODEV;
 }
 
 static inline void sg2002_vc_sram_release(enum sg2002_vc_sram_user user)
@@ -44,9 +48,7 @@ static inline void sg2002_vc_sram_release(enum sg2002_vc_sram_user user)
 static inline int sg2002_vc_sram_switch(enum sg2002_vc_sram_user user,
 					void __iomem *vc_ctrl)
 {
-	if (vc_ctrl)
-		writel(user, vc_ctrl + SG2002_VC_SRAM_SHARE);
-	return 0;
+	return -ENODEV;
 }
 
 static inline enum sg2002_vc_sram_user sg2002_vc_sram_holder(void)
