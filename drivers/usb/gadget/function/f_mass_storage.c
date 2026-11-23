@@ -1770,11 +1770,13 @@ static int do_read_disc_structure(struct fsg_common* common,
 	put_unaligned_be24(0x030000, &buf[5]);
 
 	/*
-	 * We can't address more than (2 ^^ 24) - 0x30000 sectors
-	 * i.e. 32384MB per layer, and it seems we will never reach
-	 * this limit. But maybe we should make a check to be sure.
+	 * The end sector is the last sector of the data, not the one
+	 * after it. The field has 24 bits, so it cannot address more than
+	 * (2 ^^ 24) - 0x30000 sectors, i.e. 32384MB per layer. Report a
+	 * larger image as ending at the last addressable sector.
 	 */
-	put_unaligned_be24(0x030000 + curlun->num_sectors, &buf[9]);
+	put_unaligned_be24(min_t(u64, 0x030000 + curlun->num_sectors - 1,
+				 0xffffff), &buf[9]);
 
 	/* It is okay to keep 0 in End physical sector number of Layer 0 */
 	return 2052;
