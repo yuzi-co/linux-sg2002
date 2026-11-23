@@ -1534,13 +1534,16 @@ static int do_get_configuration(struct fsg_common *common,
 	int		profile;
 	int		rt; /* Request type */
 	int		starting; /* Feature code */
+	bool		medium = fsg_lun_is_open(curlun);
+	u8		media_cur = medium ? 0x01 : 0x00;
 
 	/*
-	 * The standard prescribes to return disabled profiles
-	 * MMC_PROFILE_NONE when we have no medium, but it seems
-	 * it is enough to make unknown_cmnd in do_scsi_command().
+	 * Without a medium the current profile is MMC_PROFILE_NONE and
+	 * the features that need a medium are not current.
 	 */
-	if (curlun->cd_as_dvd) {
+	if (!medium) {
+		profile = MMC_PROFILE_NONE;
+	} else if (curlun->cd_as_dvd) {
 		/* Big images will be handled as DVD */
 		profile = MMC_PROFILE_DVD_ROM;
 	} else {
@@ -1564,6 +1567,9 @@ static int do_get_configuration(struct fsg_common *common,
 
 #define NEED_REPORT(feature) \
 		(rt == 0x02 ? (starting == feature) : (starting <= feature))
+/* A feature that is current only with a medium is not reported for RT 1 */
+#define NEED_REPORT_MEDIA(feature) \
+		(NEED_REPORT(feature) && (medium || rt != 0x01))
 
 	/* Profile List feature */
 	if (NEED_REPORT(0)) {
@@ -1608,9 +1614,9 @@ static int do_get_configuration(struct fsg_common *common,
 	}
 
 	/* Random Readable feature */
-	if (NEED_REPORT(0x0010)) {
+	if (NEED_REPORT_MEDIA(0x0010)) {
 		put_unaligned_be16(0x0010, &buf[0]);
-		buf[2] = 0 | 0x03;	/* Version = 0, Persistent|Current */
+		buf[2] = 0 | 0x02 | media_cur;	/* Version = 0, Persistent */
 		buf[3] = 8;		/* Additional length */
 		put_unaligned_be32(2048, &buf[4]); /* Logical Block Size */
 		/* buf[8,9] = 0, no Blocking size presented */
@@ -1619,25 +1625,25 @@ static int do_get_configuration(struct fsg_common *common,
 	}
 
 	/* MultiRead feature */
-	if (NEED_REPORT(0x001D)) {
+	if (NEED_REPORT_MEDIA(0x001D)) {
 		put_unaligned_be16(0x001D, &buf[0]);
-		buf[2] = 0 | 0x03;	/* Version = 0, Persistent|Current */
+		buf[2] = 0 | 0x02 | media_cur;	/* Version = 0, Persistent */
 		buf += 4;
 	}
 
 	/* CD Read feature */
-	if (NEED_REPORT(0x001E)) {
+	if (NEED_REPORT_MEDIA(0x001E)) {
 		put_unaligned_be16(0x001E, &buf[0]);
-		buf[2] = 0x04 | 0x03;	/* Version = 1, Persistent|Current */
+		buf[2] = 0x04 | 0x02 | media_cur;	/* Version = 1, Persistent */
 		buf[3] = 4;		/* Additional length */
 		buf[4] = 0x03;		/* C2|CD-Text */
 		buf += 8;
 	}
 
 	/* DVD Read feature */
-	if (NEED_REPORT(0x001F)) {
+	if (NEED_REPORT_MEDIA(0x001F)) {
 		put_unaligned_be16(0x001F, &buf[0]);
-		buf[2] = 0x04 | 0x03;	/* Version = 1, Persistent|Current */
+		buf[2] = 0x04 | 0x02 | media_cur;	/* Version = 1, Persistent */
 		buf[3] = 4;		/* Additional length */
 		buf[4] = 0x01;		/* MULTI110 */
 		buf[6] = 0x01;		/* Dual-R */
@@ -1668,6 +1674,7 @@ static int do_get_configuration(struct fsg_common *common,
 		buf += 8;
 	}
 
+#undef NEED_REPORT_MEDIA
 #undef NEED_REPORT
 
 	len = buf - buf0;
@@ -2206,7 +2213,7 @@ static int do_scsi_command(struct fsg_common *common)
 		common->data_size_from_cmnd =
 			get_unaligned_be16(&common->cmnd[7]);
 		reply = check_command(common, 10, DATA_DIR_TO_HOST,
-				      0xffffffff, 1,
+				      0xffffffff, 0,
 				      "GET CONFIGURATION");
 		if (reply == 0)
 			reply = do_get_configuration(common, bh);
@@ -2253,7 +2260,7 @@ static int do_scsi_command(struct fsg_common *common)
 			goto unknown_cmnd;
 		common->data_size_from_cmnd = 0;
 		reply = check_command(common, 12, DATA_DIR_NONE,
-				      0xffffffff, 1,
+				      0xffffffff, 0,
 				      "SET CD SPEED");
 		break;
 
