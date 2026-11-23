@@ -240,6 +240,8 @@ struct sg_jpeg_ctx {
 	struct sg_jpeg_q_data out;
 	struct sg_jpeg_q_data cap;
 	u8 qtab[2][64];			/* luma, chroma; zig-zag order */
+	/* Keeps a job from reading the header and tables while a control rewrites them. */
+	struct mutex cfg_lock;
 	u8 header[SG_JPEG_HEADER_MAX];
 	unsigned int header_len;
 };
@@ -791,6 +793,8 @@ static void sg_jpeg_device_run(void *priv)
 		return;
 	}
 
+	/* A control must not rewrite the header and tables from here to the DPB. */
+	mutex_lock(&ctx->cfg_lock);
 	bas = dst_addr;
 	use_sw = sw_header && vb2_plane_vaddr(&dst->vb2_buf, 0);
 	if (use_sw) {
@@ -844,6 +848,7 @@ static void sg_jpeg_device_run(void *priv)
 	jpu_write(jpeg, JPU_ROT_INFO, 0);
 	jpu_write(jpeg, JPU_MCU_INFO, JPU_MCU_INFO_420);
 	jpu_write(jpeg, JPU_GBU_CTRL, 0);
+	mutex_unlock(&ctx->cfg_lock);
 
 	if (q->fmt->packed) {
 		/*
@@ -1329,8 +1334,11 @@ static int sg_jpeg_s_ctrl(struct v4l2_ctrl *ctrl)
 
 	switch (ctrl->id) {
 	case V4L2_CID_JPEG_COMPRESSION_QUALITY:
+		/* A picture may be running on the old tables; it holds cfg_lock. */
+		mutex_lock(&ctx->cfg_lock);
 		sg_jpeg_set_quality(ctx, ctrl->val);
 		sg_jpeg_build_header(ctx);
+		mutex_unlock(&ctx->cfg_lock);
 		return 0;
 	}
 	return -EINVAL;
@@ -1357,6 +1365,7 @@ static int sg_jpeg_open(struct file *file)
 	if (!ctx)
 		return -ENOMEM;
 	ctx->jpeg = jpeg;
+	mutex_init(&ctx->cfg_lock);
 
 	ret = sg_jpeg_power_get(jpeg);
 	if (ret) {
