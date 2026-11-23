@@ -137,6 +137,9 @@ static inline u8 usb_sense_ascq(u32 kc)
  */
 #define CD_MAX_MSF_SECTORS	((255 * 59 * 74) - (2 * 75))
 
+/* Fabricated lead-out address of a DVD image in the TOC, MSF 00:35:00:00 */
+#define DVD_FAKE_LEADOUT_SECTORS	157350
+
 /*
  * Vendor (8 chars), product (16 chars), release (4 hexadecimal digits) and NUL
  * byte

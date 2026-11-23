@@ -1263,7 +1263,7 @@ static int do_read_toc(struct fsg_common *common, struct fsg_buffhd *bh)
 			 * This address MSF:0,0x23,0,0 is taken
 			 * from the example in the doc.
 			 */
-			store_cdrom_address(&buf[16], msf, 157350);
+			store_cdrom_address(&buf[16], msf, DVD_FAKE_LEADOUT_SECTORS);
 		} else {
 			store_cdrom_address(&buf[16], msf, curlun->num_sectors);
 		}
@@ -1293,7 +1293,8 @@ static int do_read_toc(struct fsg_common *common, struct fsg_buffhd *bh)
 		/* For A2, 7, 8, 9, 10 - zero, Pmin, Psec, Pframe of Lead out */
 		/* A DVD's lead-out is fabricated, as in the formatted TOC */
 		store_cdrom_address(&buf[7], msf, curlun->cd_as_dvd ?
-				    157350 : curlun->num_sectors);
+				    DVD_FAKE_LEADOUT_SECTORS :
+				    curlun->num_sectors);
 		return len;
 
 	default:
@@ -1662,7 +1663,7 @@ static int do_get_configuration(struct fsg_common *common,
 
 	/* Timeout feature */
 	if (NEED_REPORT(0x0105)) {
-		put_unaligned_be16(0x0105,&buf[0]);
+		put_unaligned_be16(0x0105, &buf[0]);
 		buf[2] = 0x04 | 0x03;	/* Version = 1, Persistent|Current */
 		buf[3] = 4;		/* Additional length */
 		buf += 8;
@@ -1689,7 +1690,6 @@ static int do_get_configuration(struct fsg_common *common,
 static int do_read_disc_information(struct fsg_common *common,
 			struct fsg_buffhd *bh)
 {
-	struct fsg_lun	*curlun = common->curlun;
 	u8		*buf = (u8 *) bh->buf;
 
 	/*
@@ -1708,16 +1708,11 @@ static int do_read_disc_information(struct fsg_common *common,
 	buf[7] = 0x20;	/* Unrestricted use */
 	buf[8] = 0;	/* For CD should be 0, for DVD is inapplicable */
 
-	if (!curlun->cd_as_dvd) {
-		/*
-		 * For CD if the disc is complete, both should be 0xFF.
-		 * For DVD it's inapplicable and shall be set to 0.
-		 * buf[16,17,18,19] - Last Session Lead-in Start Time.
-		 * buf[20,21,22,23] - Last Possible Start Time
-		 *                    for Start of Lead-out.
-		 */
-		memset(&buf[16], 0, 8);
-	}
+	/*
+	 * buf[16,17,18,19] - Last Session Lead-in Start Time.
+	 * buf[20,21,22,23] - Last Possible Start Time for Start of Lead-out.
+	 * Both stay 0 from the memset above, as for a DVD.
+	 */
 	return 34;
 }
 
