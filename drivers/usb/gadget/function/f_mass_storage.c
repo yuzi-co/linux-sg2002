@@ -1583,7 +1583,10 @@ static int do_get_configuration(struct fsg_common *common,
 		buf[2] = 0x08 | 0x03;	/* Version = 2, Persistent|Current */
 		buf[3] = 8;		/* Additional length */
 		put_unaligned_be32(1, &buf[4]); /* Phy = SCSI Family */
-		buf[8] = 0x01;		/* Device Busy Class Events = 1 */
+		/*
+		 * DBE (Device Busy Class Events) stays 0: it promises
+		 * GET EVENT STATUS NOTIFICATION, which is not implemented.
+		 */
 		buf += 12;
 	}
 
