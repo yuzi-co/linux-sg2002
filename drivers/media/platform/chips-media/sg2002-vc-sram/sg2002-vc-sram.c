@@ -24,7 +24,10 @@ static DEFINE_MUTEX(sram_lock);
 /* The user streaming with the SRAM and how many of its contexts do. */
 static enum sg2002_vc_sram_user sram_holder;
 static unsigned int sram_refs;
-/* The user the register was last switched to; 0 before the first switch. */
+/*
+ * The user the register was last switched to and whose firmware booted since;
+ * 0 before the first switch and after sg2002_vc_sram_forget().
+ */
 static enum sg2002_vc_sram_user sram_selected;
 
 static const char *sram_name(enum sg2002_vc_sram_user user)
@@ -114,6 +117,23 @@ int sg2002_vc_sram_switch(enum sg2002_vc_sram_user user, void __iomem *vc_ctrl)
 	return ret;
 }
 EXPORT_SYMBOL_GPL(sg2002_vc_sram_switch);
+
+/**
+ * sg2002_vc_sram_forget - note that a codec's firmware is not booted
+ * @user: the codec whose firmware is gone or was never booted
+ *
+ * Use it when the firmware boot of @user was deferred or failed, or the core
+ * lost its power. The next sg2002_vc_sram_acquire() by @user then returns 1,
+ * even though the register still reads @user, so the firmware boots again.
+ */
+void sg2002_vc_sram_forget(enum sg2002_vc_sram_user user)
+{
+	mutex_lock(&sram_lock);
+	if (sram_selected == user)
+		sram_selected = 0;
+	mutex_unlock(&sram_lock);
+}
+EXPORT_SYMBOL_GPL(sg2002_vc_sram_forget);
 
 /**
  * sg2002_vc_sram_holder - the codec streaming with the SRAM, 0 for none

@@ -2090,7 +2090,9 @@ static int coda_hw_init(struct coda_dev *dev);
 /*
  * SG2002: hold the codec SRAM while this context streams. The H.265 core
  * takes it for its own streams; when it had it since the Coda980 firmware
- * last booted, boot it again.
+ * last booted, boot it again. The decision and the boot run under boot_mutex,
+ * so a second context waits for the boot instead of starting a sequence on a
+ * core that still boots.
  */
 static int coda_sram_acquire(struct coda_ctx *ctx)
 {
@@ -2100,22 +2102,61 @@ static int coda_sram_acquire(struct coda_ctx *ctx)
 	if (!dev->sram_ctrl || ctx->sram_held)
 		return 0;
 
+	mutex_lock(&dev->boot_mutex);
 	ret = sg2002_vc_sram_acquire(SG2002_VC_SRAM_H264);
 	if (ret < 0) {
-		v4l2_err(&dev->v4l2_dev, "codec SRAM busy: H.265 is streaming\n");
-		return ret;
+		if (ret == -EBUSY)
+			v4l2_err(&dev->v4l2_dev, "codec SRAM busy: H.265 is streaming\n");
+		goto out;
 	}
 	ctx->sram_held = true;
 	if (ret > 0) {
 		coda_dbg(1, ctx, "codec SRAM was switched away, booting the firmware\n");
 		ret = coda_hw_init(dev);
 		if (ret) {
+			/* The core may be half booted: boot it again next time. */
+			sg2002_vc_sram_forget(SG2002_VC_SRAM_H264);
 			sg2002_vc_sram_release(SG2002_VC_SRAM_H264);
 			ctx->sram_held = false;
-			return ret;
+			goto out;
 		}
 	}
-	return 0;
+	ret = 0;
+out:
+	mutex_unlock(&dev->boot_mutex);
+	return ret;
+}
+
+/*
+ * Boot the firmware at probe and at resume. On the SG2002 take the SRAM
+ * through the arbiter for the boot, so the H.265 core cannot switch it
+ * meanwhile. While H.265 streams, leave the core alone and note that the
+ * firmware needs a boot: coda_sram_acquire() does it when an H.264 stream
+ * starts.
+ */
+static int coda_boot(struct coda_dev *dev)
+{
+	int ret;
+
+	if (!dev->sram_ctrl)
+		return coda_hw_init(dev);
+
+	mutex_lock(&dev->boot_mutex);
+	ret = sg2002_vc_sram_acquire(SG2002_VC_SRAM_H264);
+	if (ret == -EBUSY) {
+		v4l2_info(&dev->v4l2_dev,
+			  "codec SRAM held by H.265, firmware boot deferred\n");
+		sg2002_vc_sram_forget(SG2002_VC_SRAM_H264);
+		ret = 0;
+	} else if (ret >= 0) {
+		ret = coda_hw_init(dev);
+		if (ret)
+			sg2002_vc_sram_forget(SG2002_VC_SRAM_H264);
+		sg2002_vc_sram_release(SG2002_VC_SRAM_H264);
+	}
+	mutex_unlock(&dev->boot_mutex);
+
+	return ret;
 }
 
 static void coda_sram_release(struct coda_ctx *ctx)
@@ -3073,16 +3114,16 @@ static int coda_hw_init(struct coda_dev *dev)
 		return ret;
 
 	/*
-	 * SG2002: the codec SRAM goes to H.264 for the boot. While the H.265
-	 * core streams with it, leave the core alone; the firmware boots when
-	 * an H.264 stream starts (coda_sram_acquire()).
+	 * SG2002: the codec SRAM goes to H.264 for the boot. The caller holds
+	 * the SRAM through the arbiter and boot_mutex (coda_boot() and
+	 * coda_sram_acquire()), so the switch cannot be refused.
 	 */
-	if (dev->sram_ctrl &&
-	    sg2002_vc_sram_switch(SG2002_VC_SRAM_H264, dev->sram_ctrl)) {
-		v4l2_info(&dev->v4l2_dev,
-			  "codec SRAM held by H.265, firmware boot deferred\n");
-		coda_disable_clocks(dev);
-		return 0;
+	if (dev->sram_ctrl) {
+		ret = sg2002_vc_sram_switch(SG2002_VC_SRAM_H264, dev->sram_ctrl);
+		if (ret) {
+			coda_disable_clocks(dev);
+			return ret;
+		}
 	}
 
 	if (dev->rstc) {
@@ -3336,7 +3377,7 @@ static int coda_load_firmware(struct coda_dev *dev, const struct firmware *fw)
 	memset(dev->codebuf.vaddr, 0, codebuf_size);
 	coda_copy_firmware(dev, fw->data, fw->size);
 
-	ret = coda_hw_init(dev);
+	ret = coda_boot(dev);
 	if (ret) {
 		v4l2_err(&dev->v4l2_dev, "HW initialization failed\n");
 		goto err_codebuf;
@@ -3730,6 +3771,7 @@ static int coda_probe(struct platform_device *pdev)
 	ratelimit_default_init(&dev->mb_err_rs);
 	mutex_init(&dev->dev_mutex);
 	mutex_init(&dev->coda_mutex);
+	mutex_init(&dev->boot_mutex);
 	ida_init(&dev->ida);
 
 	dev->debugfs_root = debugfs_create_dir("coda", NULL);
@@ -3845,7 +3887,7 @@ static int coda_runtime_resume(struct device *dev)
 	int ret = 0;
 
 	if (dev->pm_domain && cdev->codebuf.vaddr) {
-		ret = coda_hw_init(cdev);
+		ret = coda_boot(cdev);
 		if (ret)
 			v4l2_err(&cdev->v4l2_dev, "HW initialization failed\n");
 	}

@@ -28,6 +28,7 @@ enum sg2002_vc_sram_user {
 int sg2002_vc_sram_acquire(enum sg2002_vc_sram_user user);
 void sg2002_vc_sram_release(enum sg2002_vc_sram_user user);
 int sg2002_vc_sram_switch(enum sg2002_vc_sram_user user, void __iomem *vc_ctrl);
+void sg2002_vc_sram_forget(enum sg2002_vc_sram_user user);
 enum sg2002_vc_sram_user sg2002_vc_sram_holder(void);
 
 #else
@@ -49,6 +50,10 @@ static inline int sg2002_vc_sram_switch(enum sg2002_vc_sram_user user,
 					void __iomem *vc_ctrl)
 {
 	return -ENODEV;
+}
+
+static inline void sg2002_vc_sram_forget(enum sg2002_vc_sram_user user)
+{
 }
 
 static inline enum sg2002_vc_sram_user sg2002_vc_sram_holder(void)

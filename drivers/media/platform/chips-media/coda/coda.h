@@ -140,6 +140,7 @@ struct coda_dev {
 
 	struct mutex		dev_mutex;
 	struct mutex		coda_mutex;
+	struct mutex		boot_mutex;	/* SRAM decision and firmware boot */
 	struct workqueue_struct	*workqueue;
 	struct v4l2_m2m_dev	*m2m_dev;
 	struct ida		ida;
