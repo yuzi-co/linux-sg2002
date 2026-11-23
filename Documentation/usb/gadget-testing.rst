@@ -234,14 +234,17 @@ The HID function provides these attributes in its function directory:
 
 	=============== ===========================================
 	keep_latest	if 1, a write never waits for the host:
-			reports wait in order behind the pending
-			one, and only the newest is kept when
-			the host stops reading
+			up to 32 reports wait in order behind the
+			pending one, and when the host has not
+			read for 100 ms only the newest is kept
 	protocol	HID protocol to use
 	report_desc	data to be used in HID reports, except data
 			passed with /dev/hidg<X>
 	report_length	HID report length
 	subclass	HID subclass to use
+	wakeup_on_write	if 1, a write asks the UDC to signal remote
+			wakeup first; it has an effect only when the
+			host enabled remote wakeup
 	=============== ===========================================
 
 For a keyboard the protocol and the subclass are 1, the report_length is 8,

@@ -642,8 +642,22 @@ static ssize_t f_hidg_write(struct file *file, const char __user *buffer,
 	 * is not suspended, and the report then goes out as usual, so the
 	 * result is ignored.
 	 */
-	if (hidg->wakeup_on_write && hidg->func.config)
-		usb_gadget_wakeup(hidg->func.config->cdev->gadget);
+	if (hidg->wakeup_on_write) {
+		struct usb_gadget *gadget = NULL;
+
+		/*
+		 * hidg->req is set only while the function is enabled, and
+		 * the gadget is unbound only after it is disabled. func.config
+		 * stays set after an unbind, so it cannot tell.
+		 */
+		spin_lock_irqsave(&hidg->write_spinlock, flags);
+		if (hidg->req)
+			gadget = hidg->func.config->cdev->gadget;
+		spin_unlock_irqrestore(&hidg->write_spinlock, flags);
+
+		if (gadget)
+			usb_gadget_wakeup(gadget);
+	}
 
 	if (hidg->keep_latest)
 		return f_hidg_write_latest(hidg, buffer, count);
