@@ -1296,9 +1296,14 @@ static void w4_job_done(struct w4_dev *w4, struct w4_ctx *ctx, u32 reason, bool 
 		state = VB2_BUF_STATE_ERROR;
 		bytes = 0;
 	} else if ((s32)recon < 0) {
-		/* The firmware kept the picture; nothing was written. */
+		/*
+		 * The firmware kept the picture and wrote nothing, which the
+		 * low-delay GOP this driver sets does not do for a good
+		 * picture. An empty capture buffer is no frame: flag it.
+		 */
 		dev_warn_ratelimited(w4->dev, "picture %u: no output (recon %d)\n",
 				     ctx->out.sequence, (s32)recon);
+		state = VB2_BUF_STATE_ERROR;
 		bytes = 0;
 	} else if (rd != lower_32_bits(start) || bytes > cap) {
 		dev_err(w4->dev, "picture %u: %u bytes at 0x%x, buffer 0x%llx+%u\n",
