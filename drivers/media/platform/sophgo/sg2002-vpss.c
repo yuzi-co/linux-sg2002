@@ -1078,16 +1078,26 @@ static int vpss_runtime_resume(struct device *dev)
 
 	/* A video clock profile chosen since the last stream. */
 	sg2002_video_clk_apply();
-	clk_prepare_enable(vpss->clk_axi);
-	clk_prepare_enable(vpss->clk_cfg_reg);
+	ret = clk_prepare_enable(vpss->clk_axi);
+	if (ret)
+		return ret;
+	ret = clk_prepare_enable(vpss->clk_cfg_reg);
+	if (ret)
+		goto err_axi;
 
 	ret = clk_bulk_prepare_enable(vpss->num_clks, vpss->clks);
 	if (ret)
-		return ret;
+		goto err_cfg_reg;
 
 	WRITE_ONCE(vpss->clocked, true);
 	vpss_hw_init(vpss);
 	return 0;
+
+err_cfg_reg:
+	clk_disable_unprepare(vpss->clk_cfg_reg);
+err_axi:
+	clk_disable_unprepare(vpss->clk_axi);
+	return ret;
 }
 
 static int vpss_runtime_suspend(struct device *dev)
@@ -1155,8 +1165,14 @@ static int vpss_probe(struct platform_device *pdev)
 	/* Firmware can leave a status bit raised (Sipeed's U-Boot runs a boot
 	 * logo), which holds the shared level line high. Clear it with the
 	 * clocks on before the handler can run. */
-	clk_prepare_enable(vpss->clk_axi);
-	clk_prepare_enable(vpss->clk_cfg_reg);
+	ret = clk_prepare_enable(vpss->clk_axi);
+	if (ret)
+		return ret;
+	ret = clk_prepare_enable(vpss->clk_cfg_reg);
+	if (ret) {
+		clk_disable_unprepare(vpss->clk_axi);
+		return ret;
+	}
 	ret = clk_bulk_prepare_enable(vpss->num_clks, vpss->clks);
 	if (ret) {
 		clk_disable_unprepare(vpss->clk_cfg_reg);
