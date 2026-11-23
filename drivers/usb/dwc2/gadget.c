@@ -1038,6 +1038,10 @@ static bool dwc2_gadget_isoc_out_held_packet(struct dwc2_hsotg_ep *hs_ep)
 			break;
 		udelay(1);
 	}
+	if (i == 100)
+		dev_warn_ratelimited(hs_ep->parent->dev,
+				     "%s: held packet not written in 100 us\n",
+				     hs_ep->ep.name);
 
 	/*
 	 * The completion may queue a request. Keep it out of this chain,
@@ -1147,6 +1151,7 @@ restart:
 }
 
 static bool dwc2_gadget_target_frame_elapsed(struct dwc2_hsotg_ep *hs_ep);
+static void dwc2_gadget_restart_isoc_out_ddma(struct dwc2_hsotg_ep *hs_ep);
 static void dwc2_hsotg_complete_request(struct dwc2_hsotg *hsotg,
 					struct dwc2_hsotg_ep *hs_ep,
 				       struct dwc2_hsotg_req *hs_req,
@@ -1621,6 +1626,13 @@ static int dwc2_hsotg_ep_queue(struct usb_ep *ep, struct usb_request *req,
 				 DXEPCTL_EPENA);
 			dwc2_gadget_fill_isoc_desc(hs_ep, dma_addr,
 						   hs_req->req.length, hold);
+		} else if (hs_ep->isoc_out_stopped) {
+			/*
+			 * A BNA stopped this OUT endpoint with nothing to
+			 * restart it with. No OUTTKNEPDIS follows a BNA, so
+			 * start the chain now.
+			 */
+			dwc2_gadget_restart_isoc_out_ddma(hs_ep);
 		}
 		return 0;
 	}
@@ -2406,6 +2418,7 @@ static void dwc2_gadget_restart_isoc_out_ddma(struct dwc2_hsotg_ep *hs_ep)
 	    dwc2_readl(hsotg, DOEPCTL(hs_ep->index)) & DXEPCTL_EPENA)
 		return;
 
+	hs_ep->isoc_out_stopped = 0;
 	hs_ep->target_frame = dwc2_hsotg_read_frameno(hsotg);
 	dwc2_gadget_start_isoc_ddma(hs_ep);
 }
@@ -2414,9 +2427,16 @@ static void dwc2_gadget_restart_isoc_out_ddma(struct dwc2_hsotg_ep *hs_ep)
  * dwc2_gadget_handle_isoc_bna - handle BNA interrupt for ISOC.
  * @hs_ep: The isochronous endpoint.
  *
- * Give back the request that met the BNA and reset target frame and
- * next_desc. An IN endpoint starts again on the next NAK interrupt. An OUT
- * endpoint is restarted here, see dwc2_gadget_restart_isoc_out_ddma().
+ * Reset target frame and next_desc. For an IN endpoint, give back the request
+ * that met the BNA; the endpoint starts again on the next NAK interrupt.
+ *
+ * An OUT endpoint is restarted here, see dwc2_gadget_restart_isoc_out_ddma(),
+ * and no request is given back: the core holds the packet that met the BNA
+ * and writes it to descriptor 0 of the new chain, which belongs to the
+ * request at the head of the queue, see dwc2_gadget_isoc_out_held_packet().
+ * Giving that request back first would complete it empty, and the packet
+ * would land in the next one. With no request queued the endpoint stays
+ * stopped until dwc2_hsotg_ep_queue() restarts it.
  *
  * The Rx FIFO is not flushed for an OUT endpoint. It is shared by all OUT
  * endpoints and the host goes on sending, so a flush here can hit a packet
@@ -2451,8 +2471,13 @@ static void dwc2_gadget_handle_isoc_bna(struct dwc2_hsotg_ep *hs_ep)
 	hs_ep->next_desc = 0;
 	hs_ep->compl_desc = 0;
 
-	dwc2_hsotg_complete_request(hsotg, hs_ep, get_ep_head(hs_ep), 0);
+	if (hs_ep->dir_in) {
+		dwc2_hsotg_complete_request(hsotg, hs_ep, get_ep_head(hs_ep),
+					    0);
+		return;
+	}
 
+	hs_ep->isoc_out_stopped = list_empty(&hs_ep->queue);
 	dwc2_gadget_restart_isoc_out_ddma(hs_ep);
 }
 
@@ -3177,6 +3202,9 @@ static void dwc2_gadget_handle_ep_disabled(struct dwc2_hsotg_ep *hs_ep)
 			hs_ep->target_frame = TARGET_FRAME_INITIAL;
 			hs_ep->next_desc = 0;
 			hs_ep->compl_desc = 0;
+			if (!hs_ep->dir_in)
+				hs_ep->isoc_out_stopped =
+					list_empty(&hs_ep->queue);
 			dwc2_gadget_restart_isoc_out_ddma(hs_ep);
 		}
 		return;
@@ -4484,6 +4512,7 @@ static int dwc2_hsotg_ep_enable(struct usb_ep *ep,
 		hs_ep->target_frame = TARGET_FRAME_INITIAL;
 		hs_ep->next_desc = 0;
 		hs_ep->compl_desc = 0;
+		hs_ep->isoc_out_stopped = 0;
 		if (dir_in) {
 			hs_ep->periodic = 1;
 			mask = dwc2_readl(hsotg, DIEPMSK);
