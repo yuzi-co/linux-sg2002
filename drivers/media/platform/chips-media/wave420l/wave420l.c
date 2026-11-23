@@ -483,6 +483,8 @@ struct w4_dev {
 	/* The context that owns the core between stream start and stop. */
 	struct w4_ctx *owner;
 
+	bool rmem;			/* of_reserved_mem_device_init() succeeded */
+
 	/* hw_lock guards powered and the running job. */
 	spinlock_t hw_lock;
 	bool powered;
@@ -2307,9 +2309,19 @@ static const struct v4l2_file_operations w4_fops = {
 
 /* Platform device */
 
-static void w4_release_rmem(void *dev)
+/*
+ * Open files outlive the platform device, and their buffers come from the
+ * reserved pool. Free the device state and give the pool back only when the
+ * last file is closed.
+ */
+static void w4_v4l2_release(struct v4l2_device *v4l2_dev)
 {
-	of_reserved_mem_device_release(dev);
+	struct w4_dev *w4 = container_of(v4l2_dev, struct w4_dev, v4l2_dev);
+
+	v4l2_m2m_release(w4->m2m_dev);
+	if (w4->rmem)
+		of_reserved_mem_device_release(w4->dev);
+	kfree(w4);
 }
 
 static int w4_probe(struct platform_device *pdev)
@@ -2322,7 +2334,7 @@ static int w4_probe(struct platform_device *pdev)
 	u32 product;
 	int ret;
 
-	w4 = devm_kzalloc(dev, sizeof(*w4), GFP_KERNEL);
+	w4 = kzalloc_obj(*w4);
 	if (!w4)
 		return -ENOMEM;
 	w4->dev = dev;
@@ -2332,8 +2344,10 @@ static int w4_probe(struct platform_device *pdev)
 	INIT_WORK(&w4->poll_work, w4_poll_work);
 
 	w4->base = devm_platform_ioremap_resource_byname(pdev, "wave");
-	if (IS_ERR(w4->base))
-		return PTR_ERR(w4->base);
+	if (IS_ERR(w4->base)) {
+		ret = PTR_ERR(w4->base);
+		goto err_free;
+	}
 
 	/*
 	 * vc_ctrl is shared with the Coda980 node, which requests the region.
@@ -2341,26 +2355,34 @@ static int w4_probe(struct platform_device *pdev)
 	 * through the arbiter, with the clocks on.
 	 */
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "vc-ctrl");
-	if (!res)
-		return dev_err_probe(dev, -EINVAL, "no vc-ctrl region\n");
+	if (!res) {
+		ret = dev_err_probe(dev, -EINVAL, "no vc-ctrl region\n");
+		goto err_free;
+	}
 	w4->vc_ctrl = devm_ioremap(dev, res->start, resource_size(res));
-	if (!w4->vc_ctrl)
-		return -ENOMEM;
+	if (!w4->vc_ctrl) {
+		ret = -ENOMEM;
+		goto err_free;
+	}
 
 	for (i = 0; i < ARRAY_SIZE(w4->clks); i++)
 		w4->clks[i].id = w4_clk_names[i];
 	ret = devm_clk_bulk_get(dev, ARRAY_SIZE(w4->clks), w4->clks);
-	if (ret)
-		return dev_err_probe(dev, ret, "cannot get clocks\n");
+	if (ret) {
+		dev_err_probe(dev, ret, "cannot get clocks\n");
+		goto err_free;
+	}
 
 	w4->rstc = devm_reset_control_get_exclusive(dev, NULL);
-	if (IS_ERR(w4->rstc))
-		return dev_err_probe(dev, PTR_ERR(w4->rstc), "cannot get reset\n");
+	if (IS_ERR(w4->rstc)) {
+		ret = dev_err_probe(dev, PTR_ERR(w4->rstc), "cannot get reset\n");
+		goto err_free;
+	}
 
 	/* The VCPU and the DMA engines address 32 bits. */
 	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
 	if (ret)
-		return ret;
+		goto err_free;
 
 	/*
 	 * Frame buffers and bitstream buffers from the video pool the Coda980
@@ -2369,38 +2391,45 @@ static int w4_probe(struct platform_device *pdev)
 	 */
 	ret = of_reserved_mem_device_init(dev);
 	if (!ret) {
-		ret = devm_add_action_or_reset(dev, w4_release_rmem, dev);
-		if (ret)
-			return ret;
+		w4->rmem = true;
 	} else if (ret != -ENODEV) {
 		dev_warn(dev, "no reserved memory pool: %d\n", ret);
 	}
 
 	/* Power the core once to see that it answers, and leave it quiet. */
 	ret = w4_power_on(w4);
-	if (ret)
-		return dev_err_probe(dev, ret, "cannot power the core\n");
+	if (ret) {
+		dev_err_probe(dev, ret, "cannot power the core\n");
+		goto err_rmem;
+	}
 	product = w4_read(w4, W4_PRODUCT_NUMBER);
 	w4_power_off(w4);
-	if ((product & 0xfff0) != (WAVE420L_PRODUCT_CODE & 0xfff0))
-		return dev_err_probe(dev, -ENODEV, "product number 0x%04x is not a WAVE420L\n",
-				     product);
+	if ((product & 0xfff0) != (WAVE420L_PRODUCT_CODE & 0xfff0)) {
+		ret = dev_err_probe(dev, -ENODEV, "product number 0x%04x is not a WAVE420L\n",
+				    product);
+		goto err_rmem;
+	}
 
 	if (use_irq) {
 		w4->irq = platform_get_irq(pdev, 0);
-		if (w4->irq < 0)
-			return w4->irq;
+		if (w4->irq < 0) {
+			ret = w4->irq;
+			goto err_rmem;
+		}
 		/* Enabled only while the core is powered. */
 		ret = devm_request_threaded_irq(dev, w4->irq, w4_irq, w4_irq_thread,
 						IRQF_ONESHOT | IRQF_NO_AUTOEN,
 						dev_name(dev), w4);
-		if (ret)
-			return dev_err_probe(dev, ret, "cannot request irq %d\n", w4->irq);
+		if (ret) {
+			dev_err_probe(dev, ret, "cannot request irq %d\n", w4->irq);
+			goto err_rmem;
+		}
 	}
 
+	w4->v4l2_dev.release = w4_v4l2_release;
 	ret = v4l2_device_register(dev, &w4->v4l2_dev);
 	if (ret)
-		return ret;
+		goto err_rmem;
 
 	w4->m2m_dev = v4l2_m2m_init(&w4_m2m_ops);
 	if (IS_ERR(w4->m2m_dev)) {
@@ -2433,6 +2462,11 @@ err_m2m:
 	v4l2_m2m_release(w4->m2m_dev);
 err_v4l2:
 	v4l2_device_unregister(&w4->v4l2_dev);
+err_rmem:
+	if (w4->rmem)
+		of_reserved_mem_device_release(dev);
+err_free:
+	kfree(w4);
 	return ret;
 }
 
@@ -2440,17 +2474,33 @@ static void w4_remove(struct platform_device *pdev)
 {
 	struct w4_dev *w4 = platform_get_drvdata(pdev);
 
+	/* No new open; an ioctl on an open file now fails with -ENODEV. */
 	video_unregister_device(&w4->vfd);
+
+	/*
+	 * Open files remain, and one of them may own the core. The mutex
+	 * waits for an ioctl that began before the unregister. Let the
+	 * running picture finish and start no other, then stop its work
+	 * and the sequence, which powers the core off and frees the frame
+	 * buffers. Nothing starts a sequence after this.
+	 */
+	mutex_lock(&w4->mutex);
+	v4l2_m2m_suspend(w4->m2m_dev);
 	cancel_delayed_work_sync(&w4->timeout_work);
 	cancel_work_sync(&w4->poll_work);
-	v4l2_m2m_release(w4->m2m_dev);
-	v4l2_device_unregister(&w4->v4l2_dev);
-	/* No context is left, so the core is off and its buffers are idle. */
+	if (w4->owner)
+		w4_stop_sequence(w4->owner);
+	mutex_unlock(&w4->mutex);
+
 	w4_free(w4, &w4->temp);
 	w4_free(w4, &w4->code);
 	if (w4->missed_irqs)
 		dev_info(w4->dev, "%lu of %lu pictures finished without an interrupt\n",
 			 w4->missed_irqs, w4->pictures);
+
+	/* The last open file frees the device state, see w4_v4l2_release(). */
+	v4l2_device_unregister(&w4->v4l2_dev);
+	v4l2_device_put(&w4->v4l2_dev);
 }
 
 static const struct of_device_id w4_of_match[] = {
