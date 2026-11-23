@@ -562,12 +562,17 @@ static int vpss_try_fmt(struct file *file, void *priv, struct v4l2_format *f)
 	/*
 	 * A packed source may come with padded lines: the CSI capture rounds
 	 * its line to 16 bytes, which a 1366 or 1368 pixel wide HDMI mode
-	 * needs. IMG_PITCH_Y takes any line, so keep the caller's, rounded
-	 * up to 16 bytes and at most two lines' worth.
+	 * needs. IMG_PITCH_Y takes any line, so keep the caller's, at most
+	 * two lines' worth, and rounded up to 16 bytes where that stays
+	 * within the limit. Clamp first so the rounding cannot wrap.
 	 */
 	if (V4L2_TYPE_IS_OUTPUT(f->type) && !fmt->is_420sp &&
-	    stride > pix->bytesperline)
-		pix->bytesperline = min(ALIGN(stride, 16), 2 * pix->bytesperline);
+	    stride > pix->bytesperline) {
+		u32 max_stride = 2 * pix->bytesperline;
+
+		pix->bytesperline = min(ALIGN(min(stride, max_stride), 16),
+					max_stride);
+	}
 	pix->sizeimage = pix->bytesperline * pix->height;
 	if (fmt->is_420sp)
 		pix->sizeimage += pix->width * pix->height / 2;
