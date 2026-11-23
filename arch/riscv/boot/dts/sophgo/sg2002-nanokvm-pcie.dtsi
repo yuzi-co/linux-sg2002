@@ -99,11 +99,9 @@
 			pinmux = <PINMUX(PIN_SD0_CLK, 0)>;
 			/*
 			 * The reset/default pad state already has the clock
-			 * pull-down enabled. Requesting pull-up here leaves both
-			 * pulls active because the cv18xx pinctrl driver only
-			 * updates the named bias bit. Keep the clock pulled down
-			 * like the vendor SDIO pad init does; CMD/DAT/CD stay
-			 * pulled up below.
+			 * pull-down enabled. Drop the inherited pull-up request
+			 * and keep the clock pulled down like the vendor SDIO
+			 * pad init does; CMD/DAT/CD stay pulled up below.
 			 */
 			/delete-property/ bias-pull-up;
 			bias-pull-down;

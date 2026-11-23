@@ -59,13 +59,12 @@
 		/*
 		 * The ATX power (porta 23) and reset (porta 27) buttons, held
 		 * low until the server requests the lines (ironkvm-dist#210).
-		 * pinctrl-cv18xx writes only the bias bit it is given, so the
-		 * pull-up is cleared by name.
+		 * The pads come out of reset with the pull-up on. Enabling
+		 * the pull-down clears it.
 		 */
 		board-buttons-pins {
 			pinmux = <PINMUX(PIN_EMMC_CMD, 3)>,
 				 <PINMUX(PIN_EMMC_DAT3, 3)>;
-			bias-pull-up = <0>;
 			bias-pull-down;
 			power-source = <3300>;
 		};

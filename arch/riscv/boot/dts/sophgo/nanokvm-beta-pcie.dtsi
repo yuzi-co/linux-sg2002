@@ -49,13 +49,11 @@
 		 * pads come out of reset with the pull-up on, and nothing drives
 		 * them until the server requests the lines, so the ATX board
 		 * saw a weak high on its button inputs (ironkvm-dist#210). Hold
-		 * them low instead. pinctrl-cv18xx writes only the bias bit it
-		 * is given, so the pull-up is cleared by name.
+		 * them low instead. Enabling the pull-down clears the pull-up.
 		 */
 		board-buttons-pins {
 			pinmux = <PINMUX(PIN_EMMC_CMD, 3)>,
 				 <PINMUX(PIN_EMMC_DAT0, 3)>;
-			bias-pull-up = <0>;
 			bias-pull-down;
 			power-source = <3300>;
 		};
