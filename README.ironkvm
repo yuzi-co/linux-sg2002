@@ -29,6 +29,37 @@ v<x.y[.z]>-ironkvm.<n>
     moved; a change to the tree gets the next <n>.
 
 
+ironkvm/7.4-rc
+--------------
+
+A work branch, not tagged: ironkvm/7.3 at v7.3-ironkvm.4 rebased onto
+v7.4-rc4, so that the series is tested on 7.4 before the release. It is
+rebased again onto v7.4 and tagged v7.4-ironkvm.1 then.
+
+ 1. The commits of ironkvm/7.3 since v7.3, cherry-picked in order. 7.4
+    changed five interfaces the series uses: the v4l2 set_fmt pad op takes
+    the client info (7eef49c16461), the stmmac SG2042 internal RX delay
+    moved into plat_stmmacenet_data (7d1cbb9ba933), the coda device is
+    allocated with devm_kzalloc_obj(), the mass storage sense values are
+    read with usb_sense_key() and its siblings, and kernel/dma/coherent.c
+    has rmem_dma_mutex (494f40ffabcd). Each commit that needed a change
+    for them ends with a line "[ironkvm/7.4: ...]" that says what changed,
+    as do the sophgo DT Makefile, beside the Milk-V Duo 256M Ethernet
+    overlay of 7.4. Two are dropped because 7.4 makes them redundant:
+    "fbdev: ssd1307fb: mark buffer as virtual framebuffer" (7.4 sets
+    FBINFO_VIRTFB there itself, 19458d015fcc) and "riscv: vector: Check
+    the xtheadvector status field in riscv_v_is_on()" (7.4 removed the
+    function's only caller, abf33d62127f).
+ 2. 26 fixes from a review of the series: the dwc2 isochronous OUT BNA
+    handling and remote wakeup (L1, hibernation, interrupts off), f_hid
+    wakeup after the gadget is gone, the lt6911uxe poll work deadlock, the
+    WAVE420L and JPEG device lifetime and JPEG header locking, the Coda980
+    boot and SRAM arbiter ordering and parameter bounds, the cv18xx pull
+    bias, six mass storage CD/DVD fixes, the VPSS stride and clock errors,
+    and the capture TRY_FMT. Each is its own commit after the series.
+ 3. The configurations regenerated for 7.4-rc4, and this section.
+
+
 ironkvm/7.3 at v7.3-ironkvm.4
 -----------------------------
 
@@ -100,13 +131,14 @@ ironkvm/configs/ holds the result of that, as the built .config files:
 
 The build fails when the .config it generates differs from these files, so
 the published configuration is the one that ships. It sets
-SOURCE_DATE_EPOCH to the commit time of the base tag (v7.3: 1792365298),
-the time the files of the kernel.org tarball carry, so the version banner
+SOURCE_DATE_EPOCH to the commit time of the base tag (v7.3: 1792365298;
+v7.4-rc4: 1795388260), the time the files of the kernel.org tarball carry, so the version banner
 and the built-in initramfs are the bytes a build from that tarball gives.
 
 The DTB IronKVM boots is compiled with cpp and dtc from
 sg2002-nanokvm-<variant>.dts, with the sophgo DT sources and include/ of
-the base tag (v7.3) standing in for those of this branch, as
+the base tag (v7.3, or for ironkvm/7.4-rc git.kernel.org's snapshot of
+v7.4-rc4) standing in for those of this branch, as
 nixos-nanokvm does. Some patches of the series add to sg2002.dtsi nodes
 that the fragments also describe (the Coda980 and the VPSS). "make dtbs"
 on this branch builds the same files over the patched sg2002.dtsi; the
