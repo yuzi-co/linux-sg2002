@@ -1401,7 +1401,10 @@ static int do_mode_sense(struct fsg_common *common, struct fsg_buffhd *bh)
 		valid_page = 1;
 		buf[0] = 0x2A;		/* Page code */
 		buf[1] = sizeof(capabilities) - 1; /* Page length */
-		memcpy(buf+2, capabilities, buf[1]);
+		if (changeable_values)	/* None of the fields are changeable */
+			memset(buf + 2, 0, buf[1]);
+		else
+			memcpy(buf + 2, capabilities, buf[1]);
 		buf += buf[1] + 2;
 	}
 
