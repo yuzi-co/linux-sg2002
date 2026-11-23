@@ -352,16 +352,22 @@ static void sg2002_adopt_source_format(struct sg2002_capture *cap)
  * format, which the bridge refreshes on every QUERY_DV_TIMINGS. A source
  * without a signal reports 0x0; the last size stays. RAW sources keep the
  * geometry adopted at bind time. The caller holds cap->lock.
+ *
+ * sg2002_source_size() only reports the size, so TRY_FMT and
+ * ENUM_FRAMESIZES can answer without touching the driver state;
+ * sg2002_follow_source_size() also adopts it, for G_FMT and S_FMT.
  */
-static void sg2002_follow_source_size(struct sg2002_capture *cap)
+static void sg2002_source_size(struct sg2002_capture *cap, u32 *width,
+			       u32 *height)
 {
 	struct v4l2_subdev_format fmt = {
 		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
 		.pad = cap->source_pad,
 	};
-	u32 width, height;
 
 	lockdep_assert_held(&cap->lock);
+	*width = cap->width;
+	*height = cap->height;
 	if (!cap->source || !cap->yuv_input || vb2_is_busy(&cap->queue))
 		return;
 	if (v4l2_subdev_call_state_active(cap->source, pad, get_fmt, &fmt))
@@ -370,12 +376,22 @@ static void sg2002_follow_source_size(struct sg2002_capture *cap)
 	    fmt.format.field != V4L2_FIELD_NONE)
 		return;
 
-	width = fmt.format.width;
-	height = fmt.format.height;
-	if (width < SG2002_YUV_MIN_SIZE || width > SG2002_YUV_MAX_WIDTH ||
-	    height < SG2002_YUV_MIN_SIZE || height > SG2002_YUV_MAX_HEIGHT ||
-	    (width & 1))
+	if (fmt.format.width < SG2002_YUV_MIN_SIZE ||
+	    fmt.format.width > SG2002_YUV_MAX_WIDTH ||
+	    fmt.format.height < SG2002_YUV_MIN_SIZE ||
+	    fmt.format.height > SG2002_YUV_MAX_HEIGHT ||
+	    (fmt.format.width & 1))
 		return;
+
+	*width = fmt.format.width;
+	*height = fmt.format.height;
+}
+
+static void sg2002_follow_source_size(struct sg2002_capture *cap)
+{
+	u32 width, height;
+
+	sg2002_source_size(cap, &width, &height);
 	if (width == cap->width && height == cap->height)
 		return;
 
@@ -1202,14 +1218,21 @@ static const struct vb2_ops sg2002_vb2_ops = {
 };
 
 static void sg2002_fill_pix_format(struct sg2002_capture *cap,
-				   struct v4l2_pix_format *pix)
+				   struct v4l2_pix_format *pix,
+				   u32 width, u32 height)
 {
-	pix->width = cap->width;
-	pix->height = cap->height;
+	pix->width = width;
+	pix->height = height;
 	pix->pixelformat = cap->pixelformat;
 	pix->field = V4L2_FIELD_NONE;
-	pix->bytesperline = cap->bytesperline;
-	pix->sizeimage = cap->sizeimage;
+	if (width == cap->width && height == cap->height) {
+		pix->bytesperline = cap->bytesperline;
+		pix->sizeimage = cap->sizeimage;
+	} else {
+		/* A source size not adopted yet: only the UYVY path has one. */
+		pix->bytesperline = ALIGN(width * 2, 16);
+		pix->sizeimage = pix->bytesperline * height;
+	}
 	if (cap->isp) {
 		/* Fixed full-range BT.601 CSC, with gamma bypassed. */
 		pix->colorspace = V4L2_COLORSPACE_SRGB;
@@ -1255,7 +1278,7 @@ static int sg2002_g_fmt(struct file *file, void *priv, struct v4l2_format *fmt)
 	struct sg2002_capture *cap = video_drvdata(file);
 
 	sg2002_follow_source_size(cap);
-	sg2002_fill_pix_format(cap, &fmt->fmt.pix);
+	sg2002_fill_pix_format(cap, &fmt->fmt.pix, cap->width, cap->height);
 	return 0;
 }
 
@@ -1264,24 +1287,25 @@ static int sg2002_try_fmt(struct file *file, void *priv,
 {
 	struct sg2002_capture *cap = video_drvdata(file);
 	u32 requested = fmt->fmt.pix.pixelformat;
+	u32 width, height;
 
-	sg2002_follow_source_size(cap);
-	sg2002_fill_pix_format(cap, &fmt->fmt.pix);
+	sg2002_source_size(cap, &width, &height);
+	sg2002_fill_pix_format(cap, &fmt->fmt.pix, width, height);
 	if (!cap->yuv_input) {
 		struct v4l2_pix_format *pix = &fmt->fmt.pix;
 
-		if (requested == V4L2_PIX_FMT_NV21 && !((cap->width | cap->height) & 1)) {
+		if (requested == V4L2_PIX_FMT_NV21 && !((width | height) & 1)) {
 			pix->pixelformat = V4L2_PIX_FMT_NV21;
-			pix->bytesperline = ALIGN(cap->width, 16);
-			pix->sizeimage = pix->bytesperline * cap->height * 3 / 2;
+			pix->bytesperline = ALIGN(width, 16);
+			pix->sizeimage = pix->bytesperline * height * 3 / 2;
 			pix->colorspace = V4L2_COLORSPACE_SRGB;
 			pix->ycbcr_enc = V4L2_YCBCR_ENC_601;
 			pix->quantization = V4L2_QUANTIZATION_FULL_RANGE;
 			pix->xfer_func = V4L2_XFER_FUNC_NONE;
 		} else {
 			pix->pixelformat = sg2002_repacked_raw_pixelformat(cap->mbus_code);
-			pix->bytesperline = ALIGN(DIV_ROUND_UP(cap->width, 2) * 3, 16);
-			pix->sizeimage = pix->bytesperline * cap->height;
+			pix->bytesperline = ALIGN(DIV_ROUND_UP(width, 2) * 3, 16);
+			pix->sizeimage = pix->bytesperline * height;
 			pix->colorspace = V4L2_COLORSPACE_RAW;
 			pix->ycbcr_enc = V4L2_YCBCR_ENC_DEFAULT;
 			pix->quantization = V4L2_QUANTIZATION_FULL_RANGE;
@@ -1298,6 +1322,7 @@ static int sg2002_s_fmt(struct file *file, void *priv, struct v4l2_format *fmt)
 	if (vb2_is_busy(&cap->queue))
 		return -EBUSY;
 
+	sg2002_follow_source_size(cap);
 	sg2002_try_fmt(file, priv, fmt);
 	cap->pixelformat = fmt->fmt.pix.pixelformat;
 	cap->bytesperline = fmt->fmt.pix.bytesperline;
@@ -1319,18 +1344,19 @@ static int sg2002_enum_framesizes(struct file *file, void *priv,
 				  struct v4l2_frmsizeenum *fsize)
 {
 	struct sg2002_capture *cap = video_drvdata(file);
+	u32 width, height;
 
-	sg2002_follow_source_size(cap);
+	sg2002_source_size(cap, &width, &height);
 	if (fsize->index ||
-	    (fsize->pixel_format == V4L2_PIX_FMT_NV21 && ((cap->width | cap->height) & 1)) ||
+	    (fsize->pixel_format == V4L2_PIX_FMT_NV21 && ((width | height) & 1)) ||
 	    (cap->yuv_input ? fsize->pixel_format != V4L2_PIX_FMT_UYVY :
 	     fsize->pixel_format != V4L2_PIX_FMT_NV21 &&
 	     fsize->pixel_format != sg2002_repacked_raw_pixelformat(cap->mbus_code)))
 		return -EINVAL;
 
 	fsize->type = V4L2_FRMSIZE_TYPE_DISCRETE;
-	fsize->discrete.width = cap->width;
-	fsize->discrete.height = cap->height;
+	fsize->discrete.width = width;
+	fsize->discrete.height = height;
 	return 0;
 }
 
