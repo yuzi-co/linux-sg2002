@@ -2325,6 +2325,15 @@ static int coda_start_streaming(struct vb2_queue *q, unsigned int count)
 			goto out;
 	}
 	if (ret < 0) {
+		/*
+		 * The start may have failed after SEQ_INIT. End the sequence
+		 * while the SRAM still is ours: it needs the firmware, and
+		 * the H.265 core may take the SRAM once it is released.
+		 */
+		if (ctx->initialized && ctx->ops->seq_end_work) {
+			queue_work(ctx->dev->workqueue, &ctx->seq_end_work);
+			flush_work(&ctx->seq_end_work);
+		}
 		coda_sram_release(ctx);
 		goto err;
 	}
