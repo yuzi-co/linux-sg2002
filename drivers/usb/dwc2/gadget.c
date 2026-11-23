@@ -5196,68 +5196,74 @@ static void dwc2_gadget_set_speed(struct usb_gadget *g, enum usb_device_speed sp
  * dwc2_hsotg_wakeup - signal remote wakeup to the host
  * @gadget: The usb gadget state
  *
- * If the host has enabled remote wakeup and the device is in L1 or L2,
- * leave clock gating if the core is in it, drive resume signalling for
- * 10 ms, and return to L0. Partial power down is not handled.
+ * From LPM L1, leave L1 the way a queued request does; the host armed the
+ * wakeup in the LPM token, and dwc2_wakeup_from_lpm_l1() checks the core's
+ * view of it. From L2 (suspend), the host must have enabled remote wakeup
+ * with SET_FEATURE: leave clock gating if the core is in it, drive resume
+ * signalling for 10 ms and return to L0. A core in partial power down or
+ * hibernation is not woken here.
  */
 static int dwc2_hsotg_wakeup(struct usb_gadget *gadget)
 {
 	struct dwc2_hsotg *hsotg = to_hsotg(gadget);
 	unsigned long flags;
-	u32 pcgctl;
 	int ret = 0;
 
 	spin_lock_irqsave(&hsotg->lock, flags);
 
-	if (!hsotg->remote_wakeup_allowed) {
-		dev_dbg(hsotg->dev, "wakeup: not enabled by the host\n");
-		ret = -EINVAL;
-		goto out;
-	}
-	if (hsotg->lx_state != DWC2_L1 && hsotg->lx_state != DWC2_L2) {
-		dev_dbg(hsotg->dev, "wakeup: not suspended (L%d)\n",
-			hsotg->lx_state);
-		ret = -EINVAL;
-		goto out;
-	}
 	if (!dwc2_is_device_mode(hsotg)) {
 		dev_dbg(hsotg->dev, "wakeup: not in device mode\n");
 		ret = -EINVAL;
 		goto out;
 	}
-	if (hsotg->in_ppd) {
-		dev_dbg(hsotg->dev, "wakeup: partial power down not handled\n");
+
+	if (hsotg->lx_state == DWC2_L1) {
+		dwc2_wakeup_from_lpm_l1(hsotg, true);
+		if (hsotg->lx_state != DWC2_L0)
+			ret = -EIO;
+		goto out;
+	}
+
+	if (hsotg->lx_state != DWC2_L2) {
+		dev_dbg(hsotg->dev, "wakeup: not suspended (L%d)\n",
+			hsotg->lx_state);
+		ret = -EINVAL;
+		goto out;
+	}
+	if (!hsotg->remote_wakeup_allowed) {
+		dev_dbg(hsotg->dev, "wakeup: not enabled by the host\n");
+		ret = -EINVAL;
+		goto out;
+	}
+	if (hsotg->in_ppd || hsotg->hibernated) {
+		dev_dbg(hsotg->dev, "wakeup: core powered down, not handled\n");
 		ret = -EOPNOTSUPP;
 		goto out;
 	}
 
-	if (hsotg->params.power_down == DWC2_POWER_DOWN_PARAM_NONE &&
-	    hsotg->bus_suspended) {
-		/* Clear the Gate hclk. */
-		pcgctl = dwc2_readl(hsotg, PCGCTL);
-		pcgctl &= ~PCGCTL_GATEHCLK;
-		dwc2_writel(hsotg, pcgctl, PCGCTL);
-		udelay(5);
-
-		/* Phy Clock bit. */
-		pcgctl = dwc2_readl(hsotg, PCGCTL);
-		pcgctl &= ~PCGCTL_STOPPCLK;
-		dwc2_writel(hsotg, pcgctl, PCGCTL);
-		udelay(5);
-
-		hsotg->bus_suspended = false;
-	}
-
 	dev_dbg(hsotg->dev, "wakeup: signalling the host\n");
 
-	/* USB 2.0 7.1.7.7: the device drives resume for 1 to 15 ms. */
-	dwc2_set_bit(hsotg, DCTL, DCTL_RMTWKUPSIG);
+	/*
+	 * USB 2.0 7.1.7.7: the device drives resume for 1 to 15 ms. Leaving
+	 * clock gating sets RMTWKUPSIG itself.
+	 */
+	if (hsotg->bus_suspended)
+		dwc2_gadget_exit_clock_gating(hsotg, 1);
+	else
+		dwc2_set_bit(hsotg, DCTL, DCTL_RMTWKUPSIG);
+
+	/* Not 10 ms with interrupts off and the lock held. */
+	spin_unlock_irqrestore(&hsotg->lock, flags);
 	mdelay(10);
+	spin_lock_irqsave(&hsotg->lock, flags);
+
 	dwc2_clear_bit(hsotg, DCTL, DCTL_RMTWKUPSIG);
 
 	/* After the signalling, the core is back in L0. */
-	call_gadget(hsotg, resume);
-	hsotg->lx_state = DWC2_L0;
+	if (hsotg->lx_state != DWC2_L0) {
+		hsotg->lx_state = DWC2_L0;
+		call_gadget(hsotg, resume);
+	}
 
 out:
 	spin_unlock_irqrestore(&hsotg->lock, flags);
