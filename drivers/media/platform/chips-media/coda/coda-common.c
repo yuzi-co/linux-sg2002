@@ -3661,6 +3661,11 @@ static int coda_get_clocks(struct platform_device *pdev, struct coda_dev *dev)
 	return 0;
 }
 
+static void coda_release_reserved_mem(void *data)
+{
+	of_reserved_mem_device_release(data);
+}
+
 static int coda_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
@@ -3680,9 +3685,21 @@ static int coda_probe(struct platform_device *pdev)
 	dev->dev = &pdev->dev;
 
 	ret = of_reserved_mem_device_init(&pdev->dev);
-	if (ret && ret != -ENODEV)
+	if (!ret) {
+		/*
+		 * Released by devres, so after remove() and after every error
+		 * return of probe, and so after every coherent and vb2 user of
+		 * the reserved memory is gone.
+		 */
+		ret = devm_add_action_or_reset(&pdev->dev,
+					       coda_release_reserved_mem,
+					       &pdev->dev);
+		if (ret)
+			return ret;
+	} else if (ret != -ENODEV) {
 		dev_warn(&pdev->dev, "failed to initialize reserved memory: %d\n",
 			 ret);
+	}
 
 	if (dev->devtype->requires_firmware_name) {
 		ret = of_property_read_string(np, "firmware-name", &firmware_name);
@@ -3884,9 +3901,6 @@ static void coda_remove(struct platform_device *pdev)
 	destroy_workqueue(dev->workqueue);
 	coda_free_device_buffers(dev);
 	ida_destroy(&dev->ida);
-
-	/* only after every coherent/vb2 user of the rmem dma_ops is gone */
-	of_reserved_mem_device_release(&pdev->dev);
 }
 
 #ifdef CONFIG_PM
