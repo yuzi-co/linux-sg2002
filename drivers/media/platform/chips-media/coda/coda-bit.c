@@ -2149,15 +2149,17 @@ static void coda980_prc_prepare(struct coda_ctx *ctx, bool intra)
 	avg = den && num ? div_u64((u64)bits_s * num, den) : bits_s / 30;
 	avg = max(avg, 1u);
 	if (intra) {
-		int ip = max(coda980_prc_iprop, 1);
+		u32 ip = clamp(coda980_prc_iprop, 1, 1024);
 
 		target = gop > 1 ? div_u64((u64)ip * gop * avg, ip + gop - 1) :
 			 avg;
 	} else {
 		target = avg - div_s64(ctx->prc.level, max(fps / 2, 1u));
 		target = clamp_t(s64, target, avg / 4,
-				 (s64)avg * max(coda980_prc_ptarget_max, 1));
+				 (s64)avg * clamp(coda980_prc_ptarget_max, 1, 1024));
 	}
+	/* The target register and the QP delta take 32 bits. */
+	target = min_t(s64, target, U32_MAX);
 
 	coda980_prc_limits(ctx, intra, &lo, &hi);
 	if (ctx->prc.have[t]) {
@@ -2167,13 +2169,15 @@ static void coda980_prc_prepare(struct coda_ctx *ctx, bool intra)
 		 * A P picture's bits swing with what the one before left to
 		 * refine: move its QP by a few steps at a time, faster up.
 		 */
-		if (!intra)
-			d = clamp(d, -coda980_prc_p_step, 2 * coda980_prc_p_step);
+		if (!intra) {
+			int step = clamp(coda980_prc_p_step, 0, 12);
+
+			d = clamp(d, -step, 2 * step);
+		}
 		qp = ctx->prc.last_qp[t] + d;
 	} else if (!intra && ctx->prc.have[0]) {
 		qp = ctx->prc.last_qp[0];
-	}
-	else {
+	} else {
 		qp = coda980_prc_qp0;
 	}
 	if (coda980_prc_fixed_qp >= 0)
@@ -2196,8 +2200,9 @@ static void coda980_prc_prepare(struct coda_ctx *ctx, bool intra)
 	coda_write(dev, clamp_t(s64, ctx->prc.level, 0, bs),
 		   CODA980_CMD_ENC_PIC_RC_BUF_LEVEL);
 	coda_write(dev, bs, CODA980_CMD_ENC_PIC_RC_BUF_SIZE);
-	coda_write(dev, row_minus << 26 | row_plus << 20 | qp << 12,
-		   CODA980_CMD_ENC_PIC_RC_QP);
+	/* qp, row_minus and row_plus are within 0..51 here. */
+	coda_write(dev, (u32)row_minus << 26 | (u32)row_plus << 20 |
+		   (u32)qp << 12, CODA980_CMD_ENC_PIC_RC_QP);
 }
 
 static void coda980_prc_finish(struct coda_ctx *ctx, u32 bytes, bool intra)
