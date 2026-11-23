@@ -1444,7 +1444,7 @@ static u32 coda980_gop_num(struct coda_ctx *ctx)
 	u32 value = ctx->params.gop_size;
 
 	if (coda980_idr_interval > 0)
-		value |= min(coda980_idr_interval, 0x7ff) <<
+		value |= min_t(u32, coda980_idr_interval, 0x7ff) <<
 			 CODA980_GOP_IDR_INTERVAL_OFFSET;
 	if (coda980_iqp_offset >= -8 && coda980_iqp_offset <= 7)
 		value |= CODA980_GOP_IQP_OFFSET_ENABLE |
@@ -1745,7 +1745,8 @@ static int coda_start_encoding(struct coda_ctx *ctx)
 
 	value = 0;
 	if (dev->devtype->has_coda980_h264_abi)
-		gamma = coda980_h264 && coda980_gamma >= 0 ? coda980_gamma : 0;
+		gamma = coda980_h264 && coda980_gamma >= 0 ?
+			min(coda980_gamma, 32767) : 0;
 	else if (dev->devtype->product == CODA_960)
 		gamma = CODA9_DEFAULT_GAMMA;
 	else
